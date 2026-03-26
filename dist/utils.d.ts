@@ -1,0 +1,14 @@
+import type { ChatCompletion } from "openai/resources/chat/completions/completions";
+import type { Response } from "openai/resources/responses/responses";
+import type { GeneralAIContentPart, GeneralAIMessage, GeneralAIMemorySnapshot, GeneralAIUsageSummary } from "./types.js";
+export declare function isRecord(value: unknown): value is Record<string, unknown>;
+export declare function asArray<T>(value: T | T[] | undefined): T[];
+export declare function cloneMessage(message: GeneralAIMessage): GeneralAIMessage;
+export declare function toTextContent(content: string | GeneralAIContentPart[]): string;
+export declare function jsonStringify(value: unknown): string;
+export declare function compactWhitespace(value: string): string;
+export declare function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T>;
+export declare function mergeStringLists(...lists: Array<string[] | undefined>): string[];
+export declare function summarizeMessages(messages: GeneralAIMessage[], maxItems?: number): string;
+export declare function buildMemorySnapshot(messages: GeneralAIMessage[], cleaned: string, notes: string[], previous?: GeneralAIMemorySnapshot | null): GeneralAIMemorySnapshot;
+export declare function aggregateUsage(entries: Array<Response | ChatCompletion | undefined>): GeneralAIUsageSummary;

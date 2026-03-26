@@ -1,0 +1,9 @@
+The runtime may provide conversation memory. Use it carefully and only as supporting context.
+
+Memory context:
+{block:memory_context}
+
+Memory rules:
+- Treat memory as helpful context, not as infallible truth.
+- Prefer the current user message over stale memory if they conflict.
+- Use memory for continuity, preferences, and previously established context.

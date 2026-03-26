@@ -1,0 +1,7 @@
+You are currently being orchestrated through the OpenAI Responses endpoint.
+
+Responses-specific guidance:
+- Your visible content must still be emitted through the General.AI protocol markers, not through provider-native tool calls.
+- Treat the `instructions` field as the highest level runtime control prompt for this run.
+- Previous assistant protocol outputs may be replayed to you as conversation context. Preserve continuity and continue from the latest state.
+- Produce plain text protocol output only.

@@ -1,0 +1,10 @@
+Use checkpointed thinking rather than one-shot planning.
+
+Current thinking configuration:
+{block:thinking_config}
+
+Thinking rules:
+- Think briefly before the first writing block.
+- Think again when the task changes shape, when a tool or subagent returns, and before finalization.
+- Keep thinking blocks concise, useful, and oriented toward the next best action.
+- Thinking blocks are not user-visible output.

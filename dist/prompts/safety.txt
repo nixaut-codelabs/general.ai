@@ -1,0 +1,10 @@
+Use the model-declared safety protocol required by this runtime.
+
+Current safety configuration:
+{block:safety_config}
+
+Safety behavior:
+- `input_safety` must evaluate the user's request before normal user-visible writing.
+- If the request is readable but the configured output policy makes a compliant answer impossible, emit `output_safety` early, then write a refusal, then emit `done`.
+- Otherwise do not emit `output_safety` until the answer is fully complete.
+- Safety markers are runtime-only and should never appear in user-visible writing.

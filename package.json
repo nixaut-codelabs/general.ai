@@ -1,0 +1,63 @@
+{
+  "name": "general.ai",
+  "version": "1.0.0",
+  "description": "Production-ready TypeScript-first OpenAI orchestration wrapper with exact native passthrough and an agent runtime for prompts, protocol parsing, tools, subagents, safety, memory, and streaming.",
+  "license": "Apache-2.0",
+  "author": "Nixaut CodeLabs",
+  "homepage": "https://github.com/nixaut-codelabs/general.ai#readme",
+  "bugs": {
+    "url": "https://github.com/nixaut-codelabs/general.ai/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nixaut-codelabs/general.ai.git"
+  },
+  "keywords": [
+    "openai",
+    "responses",
+    "chat-completions",
+    "agent",
+    "orchestration",
+    "llm",
+    "typescript",
+    "node",
+    "bun",
+    "prompt-engineering",
+    "subagents",
+    "tool-calling"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-prompts.mjs",
+    "test": "npm run build && node --test test/**/*.test.js",
+    "test:full": "npm run build && bun run test.js",
+    "smoke": "npm run build && node test/smoke/node-smoke.mjs && bun test/smoke/bun-smoke.mjs",
+    "examples": "npm run build && node examples/native-responses.mjs",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run smoke && npm run pack:check"
+  },
+  "dependencies": {
+    "openai": "^6.33.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}
