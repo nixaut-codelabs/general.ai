@@ -7,13 +7,13 @@
 Native OpenAI passthrough when you want exact SDK behavior.  
 An agent runtime when you want prompts, protocol parsing, tools, subagents, safety, memory, retries, and cleaned output.
 
-[![npm version](https://img.shields.io/npm/v/general.ai?color=cb3837&label=npm)](https://npmjs.com/package/general.ai)
-[![npm downloads](https://img.shields.io/npm/dm/general.ai)](https://npmjs.com/package/general.ai)
+[![npm version](https://img.shields.io/npm/v/@lightining/general.ai?color=cb3837&label=npm)](https://npmjs.com/package/@lightining/general.ai)
+[![npm downloads](https://img.shields.io/npm/dm/@lightining/general.ai)](https://npmjs.com/package/@lightining/general.ai)
 [![Node >=22](https://img.shields.io/badge/node-%3E%3D22-339933)](https://nodejs.org/)
 [![Bun >=1.1](https://img.shields.io/badge/bun-%3E%3D1.1-000000)](https://bun.sh/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 
-[npm](https://npmjs.com/package/general.ai) • [GitHub](https://github.com/nixaut-codelabs/general.ai)
+[npm](https://npmjs.com/package/@lightining/general.ai) • [GitHub](https://github.com/nixaut-codelabs/general.ai)
 
 </div>
 
@@ -21,7 +21,7 @@ An agent runtime when you want prompts, protocol parsing, tools, subagents, safe
 
 ## What General.AI Is
 
-`general.ai` exposes **two complementary surfaces**:
+`@lightining/general.ai` exposes **two complementary surfaces**:
 
 - `native`: exact OpenAI SDK access with no request, response, or stream-shape mutation
 - `agent`: a structured orchestration runtime that layers prompt assembly, protocol parsing, retries, tools, subagents, safety, memory, streaming, and cleaned output on top of OpenAI models
@@ -61,13 +61,13 @@ This split is intentional:
 ## Install
 
 ```bash
-npm install general.ai openai
+npm install @lightining/general.ai openai
 ```
 
 or:
 
 ```bash
-bun add general.ai openai
+bun add @lightining/general.ai openai
 ```
 
 **Runtime targets**
@@ -123,7 +123,7 @@ General.AI is designed to avoid both failures.
 
 ```ts
 import OpenAI from "openai";
-import { GeneralAI } from "general.ai";
+import { GeneralAI } from "@lightining/general.ai";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -181,7 +181,7 @@ Use the native surface when you want **exact OpenAI SDK behavior**.
 
 ```ts
 import OpenAI from "openai";
-import { GeneralAI } from "general.ai";
+import { GeneralAI } from "@lightining/general.ai";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -277,7 +277,7 @@ console.log(result.cleaned);
 General.AI tools are **runtime-defined JavaScript functions** triggered by protocol markers.
 
 ```ts
-import { defineTool } from "general.ai";
+import { defineTool } from "@lightining/general.ai";
 
 const echoTool = defineTool({
   name: "echo",
@@ -334,7 +334,7 @@ General.AI also ships a helper for OpenAI web search via Responses:
 
 ```ts
 import OpenAI from "openai";
-import { createOpenAIWebSearchTool } from "general.ai";
+import { createOpenAIWebSearchTool } from "@lightining/general.ai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -351,7 +351,7 @@ const webSearch = createOpenAIWebSearchTool({
 Subagents are **bounded delegated General.AI runs** with their own instructions, model, limits, safety, and tool access.
 
 ```ts
-import { defineSubagent } from "general.ai";
+import { defineSubagent } from "@lightining/general.ai";
 
 const mathHelper = defineSubagent({
   name: "math_helper",
@@ -508,7 +508,7 @@ personality: {
 General.AI ships with `InMemoryMemoryAdapter`, and you can inject your own adapter.
 
 ```ts
-import { GeneralAI, InMemoryMemoryAdapter } from "general.ai";
+import { GeneralAI, InMemoryMemoryAdapter } from "@lightining/general.ai";
 
 const memoryAdapter = new InMemoryMemoryAdapter();
 const generalAI = new GeneralAI({ openai, memoryAdapter });
@@ -799,7 +799,7 @@ It is **not** intended as a browser bundle.
 
 ## Links
 
-- npm: [npmjs.com/package/general.ai](https://npmjs.com/package/general.ai)
+- npm: [npmjs.com/package/@lightining/general.ai](https://npmjs.com/package/@lightining/general.ai)
 - GitHub: [github.com/nixaut-codelabs/general.ai](https://github.com/nixaut-codelabs/general.ai)
 
 ---

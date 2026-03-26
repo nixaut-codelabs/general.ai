@@ -1,5 +1,5 @@
 {
-  "name": "general.ai",
+  "name": "@lightining/general.ai",
   "version": "1.0.0",
   "description": "Production-ready TypeScript-first OpenAI orchestration wrapper with exact native passthrough and an agent runtime for prompts, protocol parsing, tools, subagents, safety, memory, and streaming.",
   "license": "Apache-2.0",
