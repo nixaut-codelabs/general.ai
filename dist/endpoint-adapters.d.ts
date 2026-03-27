@@ -1,9 +1,10 @@
 import type { ChatCompletion, ChatCompletionChunk, ChatCompletionMessageParam } from "openai/resources/chat/completions/completions";
 import type { Response, ResponseInput } from "openai/resources/responses/responses";
-import type { GeneralAICompatibilityConfig, GeneralAIEndpoint, GeneralAIMessage, GeneralAIRequestOverrides } from "./types.js";
+import type { GeneralAICompatibilityConfig, GeneralAICompatibilityProfile, GeneralAIEndpoint, GeneralAIMessage, GeneralAIRequestOverrides } from "./types.js";
 export declare const RESERVED_AGENT_RESPONSE_KEYS: readonly ["input", "instructions", "model", "stream", "text", "tools", "tool_choice"];
 export declare const RESERVED_AGENT_CHAT_KEYS: readonly ["messages", "model", "stream", "response_format", "tools", "tool_choice"];
 export declare function getReservedRequestKeys(endpoint: GeneralAIEndpoint, request: GeneralAIRequestOverrides | undefined): string[];
+export declare function resolveCompatibilityProfile(compatibility?: GeneralAICompatibilityConfig): Exclude<GeneralAICompatibilityProfile, "auto">;
 export declare function compileMessagesForChatCompletions(messages: GeneralAIMessage[], compatibility?: GeneralAICompatibilityConfig): ChatCompletionMessageParam[];
 export declare function compileMessagesForResponses(messages: GeneralAIMessage[]): ResponseInput;
 export declare function extractTextFromChatCompletion(result: ChatCompletion): string;

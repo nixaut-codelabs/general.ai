@@ -85,6 +85,35 @@ test("parseProtocol normalizes inline markers onto separate lines", () => {
   assert.equal(parsed.events[1].content.trim(), "Merhaba");
 });
 
+test("parseProtocol parses structured checkpoint and revise payloads", () => {
+  const parsed = parseProtocol(
+    [
+      "[[[status:thinking]]]",
+      "Plan",
+      '[[[status:checkpoint:{"completed":["part_one"],"remaining":["part_two"],"confidence":"medium"}]]]',
+      '[[[status:revise:{"reason":"new evidence","next":"rewrite"}]]]',
+      "[[[status:done]]]",
+    ].join("\n"),
+    { step: 1 },
+  );
+
+  assert.deepEqual(parsed.events.map((event) => event.kind), [
+    "thinking",
+    "checkpoint",
+    "revise",
+    "done",
+  ]);
+  assert.deepEqual(parsed.events[1].payload, {
+    completed: ["part_one"],
+    remaining: ["part_two"],
+    confidence: "medium",
+  });
+  assert.deepEqual(parsed.events[2].payload, {
+    reason: "new evidence",
+    next: "rewrite",
+  });
+});
+
 test("ProtocolStreamParser supports incremental parsing", () => {
   const parser = new ProtocolStreamParser({ step: 1 });
   parser.push("[[[status:writing]]]\nHello");

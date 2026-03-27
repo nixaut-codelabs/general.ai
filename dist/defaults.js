@@ -38,6 +38,7 @@ export const DEFAULT_SAFETY = {
 };
 export const DEFAULT_THINKING = {
     enabled: true,
+    mode: "inline",
     strategy: "checkpointed",
     effort: "medium",
     checkpoints: [
@@ -46,6 +47,7 @@ export const DEFAULT_THINKING = {
         "After each tool or subagent result",
         "Before final completion",
     ],
+    checkpointFormat: "structured",
     prompt: "",
 };
 export const DEFAULT_LIMITS = {
@@ -54,5 +56,51 @@ export const DEFAULT_LIMITS = {
     maxSubagentCalls: 2,
     maxThinkingBlocks: 8,
     maxProtocolErrors: 3,
+    maxParallelActions: 4,
+    maxParallelTools: 4,
+    maxParallelSubagents: 2,
+    maxCallsPerStep: 6,
+    maxDepth: 3,
+    timeoutMs: 60000,
+};
+export const DEFAULT_PARALLEL = {
+    enabled: true,
+    maxParallelActions: DEFAULT_LIMITS.maxParallelActions,
+    maxParallelTools: DEFAULT_LIMITS.maxParallelTools,
+    maxParallelSubagents: DEFAULT_LIMITS.maxParallelSubagents,
+    maxCallsPerStep: DEFAULT_LIMITS.maxCallsPerStep,
+    allowMixedToolAndSubagentParallelism: true,
+};
+export const DEFAULT_CONTEXT = {
+    enabled: true,
+    mode: "auto",
+    strategy: "hybrid",
+    trigger: {
+        contextRatio: 0.9,
+        messageCount: 32,
+        turnCount: 12,
+        estimatedMaxTokens: 32768,
+    },
+    keep: {
+        recentMessages: 6,
+        boundaryUserMessages: 1,
+        boundaryAssistantMessages: 1,
+    },
+    summary: {
+        profile: "balanced",
+        includeFacts: true,
+        includePreferences: true,
+        includeOpenLoops: true,
+        includeDecisions: true,
+        includeArtifacts: true,
+        maxItems: 8,
+    },
+    manual: {
+        enabled: true,
+        force: false,
+        includeUserIntent: true,
+        note: "",
+    },
+    prompt: "",
 };
 //# sourceMappingURL=defaults.js.map

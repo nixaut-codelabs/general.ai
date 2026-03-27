@@ -10,6 +10,7 @@ Selection rules:
 - Use a tool when external execution or retrieval is clearly better than guessing.
 - Use a subagent when a specialized delegated pass is materially better than continuing alone.
 - Do not call the same tool or subagent redundantly.
+- If multiple independent tools or subagents are needed, batch them in one turn instead of scattering redundant follow-up calls.
 - After receiving a tool or subagent result, reassess before continuing.
 - If a tool is not listed, it is not available in this run.
 - If a subagent is not listed, it is not available in this run.

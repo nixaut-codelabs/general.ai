@@ -69,6 +69,30 @@ export function summarizeMessages(messages, maxItems = 6) {
         .map((message) => `${message.role}: ${toTextContent(message.content)}`)
         .join("\n");
 }
+export function estimateTextTokens(text) {
+    return Math.ceil(text.length / 4);
+}
+export function estimateMessagesTokens(messages) {
+    return messages.reduce((total, message) => {
+        const content = toTextContent(message.content);
+        return total + estimateTextTokens(content) + 4;
+    }, 0);
+}
+export function countConversationTurns(messages) {
+    let turns = 0;
+    let openUserTurn = false;
+    for (const message of messages) {
+        if (message.role === "user") {
+            turns += 1;
+            openUserTurn = true;
+            continue;
+        }
+        if (message.role === "assistant" && openUserTurn) {
+            openUserTurn = false;
+        }
+    }
+    return turns;
+}
 export function buildMemorySnapshot(messages, cleaned, notes, previous) {
     const summaryParts = [
         previous?.summary,

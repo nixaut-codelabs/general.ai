@@ -24,6 +24,13 @@ export function getReservedRequestKeys(endpoint, request) {
         : RESERVED_AGENT_CHAT_KEYS;
     return reserved.filter((key) => source && key in source);
 }
+export function resolveCompatibilityProfile(compatibility = {}) {
+    const profile = compatibility.profile ?? compatibility.chatRoleMode ?? "auto";
+    if (profile === "auto") {
+        return "modern";
+    }
+    return profile;
+}
 function toChatTextPart(text) {
     return {
         type: "text",
@@ -46,7 +53,7 @@ function toChatContentParts(role, content) {
         return content;
     }
     const parts = content.map((part) => mapPartToChat(role, part));
-    return role === "assistant" || role === "developer" || role === "system"
+    return role === "assistant" || role === "developer" || role === "system" || role === "summary"
         ? parts.every((part) => part.type === "text")
             ? parts
             : (() => {
@@ -117,9 +124,29 @@ function mapPartToResponses(part) {
     }
 }
 export function compileMessagesForChatCompletions(messages, compatibility = {}) {
-    const roleMode = compatibility.chatRoleMode ?? "modern";
+    const profile = resolveCompatibilityProfile(compatibility);
+    const roleMode = profile === "modern" ? "modern" : "classic";
     let sawConversationTurn = false;
     return messages.map((message) => {
+        if (profile === "classic_v2" &&
+            (message.role === "developer" || message.role === "system" || message.role === "summary")) {
+            const label = message.role === "summary"
+                ? "[General.AI summary context]"
+                : "[General.AI runtime continuation instruction]";
+            const content = message.role === "summary"
+                ? typeof message.content === "string"
+                    ? `Conversation summary:\n${message.content}`
+                    : [
+                        "Conversation summary:",
+                        toInstructionText(message.content),
+                    ].join("\n")
+                : toInstructionText(message.content);
+            return {
+                role: "user",
+                content: [label, content].join("\n\n"),
+                name: message.name,
+            };
+        }
         if (roleMode === "classic" && (message.role === "developer" || message.role === "system")) {
             if (sawConversationTurn) {
                 return {
@@ -135,6 +162,29 @@ export function compileMessagesForChatCompletions(messages, compatibility = {}) 
             return {
                 role: "system",
                 content: content,
+                name: message.name,
+            };
+        }
+        if (message.role === "summary") {
+            const summaryContent = typeof message.content === "string"
+                ? `Conversation summary:\n${message.content}`
+                : [
+                    "Conversation summary:",
+                    toInstructionText(message.content),
+                ].join("\n");
+            if (roleMode === "classic" && sawConversationTurn) {
+                return {
+                    role: "user",
+                    content: [
+                        "[General.AI summary context]",
+                        summaryContent,
+                    ].join("\n\n"),
+                    name: message.name,
+                };
+            }
+            return {
+                role: roleMode === "classic" ? "system" : "developer",
+                content: summaryContent,
                 name: message.name,
             };
         }
@@ -173,12 +223,16 @@ export function compileMessagesForChatCompletions(messages, compatibility = {}) 
 }
 export function compileMessagesForResponses(messages) {
     return messages.map((message) => {
+        const role = message.role === "summary" ? "developer" : message.role;
+        const content = message.role === "summary" && typeof message.content === "string"
+            ? `Conversation summary:\n${message.content}`
+            : message.content;
         const input = {
             type: "message",
-            role: message.role,
-            content: typeof message.content === "string"
-                ? message.content
-                : message.content.map(mapPartToResponses),
+            role,
+            content: typeof content === "string"
+                ? content
+                : content.map(mapPartToResponses),
         };
         if (message.phase && message.role === "assistant") {
             input.phase = message.phase;

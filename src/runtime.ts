@@ -2,7 +2,9 @@ import type OpenAI from "openai";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions/completions";
 import type { Response } from "openai/resources/responses/responses";
 import {
+  DEFAULT_CONTEXT,
   DEFAULT_LIMITS,
+  DEFAULT_PARALLEL,
   DEFAULT_SAFETY,
   DEFAULT_THINKING,
 } from "./defaults.js";
@@ -13,6 +15,7 @@ import {
   extractTextFromChatCompletion,
   extractTextFromResponse,
   getReservedRequestKeys,
+  resolveCompatibilityProfile,
   stripReservedRequestKeys,
   RESERVED_AGENT_CHAT_KEYS,
   RESERVED_AGENT_RESPONSE_KEYS,
@@ -23,19 +26,27 @@ import {
   aggregateUsage,
   buildMemorySnapshot,
   cloneMessage,
+  countConversationTurns,
+  estimateMessagesTokens,
   jsonStringify,
   mergeStringLists,
+  omitUndefined,
   summarizeMessages,
+  toTextContent,
 } from "./utils.js";
 import type {
   GeneralAIAgentParams,
   GeneralAIAgentResult,
   GeneralAIAgentStreamEvent,
+  GeneralAICallSubagentEvent,
+  GeneralAICallToolEvent,
+  GeneralAIContextConfig,
   GeneralAILibraryDefaults,
   GeneralAILimits,
   GeneralAIMemoryAdapter,
   GeneralAIMemorySnapshot,
   GeneralAIMessage,
+  GeneralAIParallelConfig,
   GeneralAIParsedProtocol,
   GeneralAIPromptOverrides,
   GeneralAIPromptPack,
@@ -61,12 +72,14 @@ interface AgentRuntimeDependencies {
 interface NormalizedAgentParams
   extends Omit<
     GeneralAIAgentParams,
-    "safety" | "thinking" | "limits" | "tools" | "subagents" | "memory" | "prompts"
+    "safety" | "thinking" | "limits" | "parallel" | "context" | "tools" | "subagents" | "memory" | "prompts"
   > {
   debug: boolean;
   safety: Required<GeneralAISafetyConfig>;
   thinking: Required<GeneralAIThinkingConfig>;
   limits: Required<GeneralAILimits>;
+  parallel: Required<GeneralAIParallelConfig>;
+  context: Required<GeneralAIContextConfig>;
   tools: {
     enabled: boolean;
     registry: Record<string, GeneralAIToolDefinition>;
@@ -126,10 +139,44 @@ function mergePromptOverrides(
   };
 }
 
+function mergeRequestOverrides(
+  base: GeneralAIAgentParams["request"] | undefined,
+  extra: GeneralAIAgentParams["request"] | undefined,
+): GeneralAIAgentParams["request"] | undefined {
+  const merged = omitUndefined({
+    responses:
+      base?.responses || extra?.responses
+        ? {
+            ...base?.responses,
+            ...extra?.responses,
+          }
+        : undefined,
+    chat_completions:
+      base?.chat_completions || extra?.chat_completions
+        ? {
+            ...base?.chat_completions,
+            ...extra?.chat_completions,
+          }
+        : undefined,
+  });
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 function mergeConfigRecords(
   ...records: Array<Record<string, string | number | boolean> | undefined>
 ): Record<string, string | number | boolean> {
   return Object.assign({}, ...records);
+}
+
+function mergeNestedConfig<T extends object>(
+  base: T | undefined,
+  extra: T | undefined,
+): T {
+  return {
+    ...(base ?? {}),
+    ...(extra ?? {}),
+  } as T;
 }
 
 function normalizeAgentParams(
@@ -158,6 +205,48 @@ function normalizeAgentParams(
     ...defaults?.limits,
     ...params.limits,
   };
+  const parallel = {
+    ...DEFAULT_PARALLEL,
+    ...defaults?.parallel,
+    ...params.parallel,
+    maxParallelActions:
+      params.parallel?.maxParallelActions ??
+      defaults?.parallel?.maxParallelActions ??
+      limits.maxParallelActions,
+    maxParallelTools:
+      params.parallel?.maxParallelTools ??
+      defaults?.parallel?.maxParallelTools ??
+      limits.maxParallelTools,
+    maxParallelSubagents:
+      params.parallel?.maxParallelSubagents ??
+      defaults?.parallel?.maxParallelSubagents ??
+      limits.maxParallelSubagents,
+    maxCallsPerStep:
+      params.parallel?.maxCallsPerStep ??
+      defaults?.parallel?.maxCallsPerStep ??
+      limits.maxCallsPerStep,
+  };
+  const context = {
+    ...DEFAULT_CONTEXT,
+    ...defaults?.context,
+    ...params.context,
+    trigger: mergeNestedConfig(
+      mergeNestedConfig(DEFAULT_CONTEXT.trigger, defaults?.context?.trigger),
+      params.context?.trigger,
+    ),
+    keep: mergeNestedConfig(
+      mergeNestedConfig(DEFAULT_CONTEXT.keep, defaults?.context?.keep),
+      params.context?.keep,
+    ),
+    summary: mergeNestedConfig(
+      mergeNestedConfig(DEFAULT_CONTEXT.summary, defaults?.context?.summary),
+      params.context?.summary,
+    ),
+    manual: mergeNestedConfig(
+      mergeNestedConfig(DEFAULT_CONTEXT.manual, defaults?.context?.manual),
+      params.context?.manual,
+    ),
+  };
   const safety: Required<GeneralAISafetyConfig> = {
     ...DEFAULT_SAFETY,
     ...defaults?.safety,
@@ -184,6 +273,8 @@ function normalizeAgentParams(
     safety,
     thinking,
     limits,
+    parallel,
+    context,
     prompts: mergePromptOverrides(defaults?.prompts, params.prompts),
     tools: {
       enabled: params.tools?.enabled ?? defaults?.tools?.enabled ?? true,
@@ -375,8 +466,10 @@ function renderThinkingBlock(params: NormalizedAgentParams): string {
 
   return [
     `Thinking enabled: ${String(params.thinking.enabled)}`,
+    `Thinking mode: ${params.thinking.mode}`,
     `Thinking strategy: ${params.thinking.strategy}`,
     `Thinking effort: ${params.thinking.effort}`,
+    `Checkpoint format: ${params.thinking.checkpointFormat}`,
     `Thinking checkpoints:\n${checkpoints}`,
     params.thinking.prompt ?? "",
   ]
@@ -417,10 +510,168 @@ function renderTaskBlock(params: NormalizedAgentParams): string {
   return [
     `Endpoint: ${params.endpoint}`,
     `Model: ${params.model}`,
-    `Chat role mode: ${params.compatibility?.chatRoleMode ?? "modern"}`,
+    `Compatibility profile: ${resolveCompatibilityProfile(params.compatibility)}`,
+    `Parallel actions enabled: ${String(params.parallel.enabled)}`,
+    `Context management mode: ${params.context.enabled ? params.context.mode : "off"}`,
+    `Context strategy: ${params.context.strategy}`,
     `Conversation preview:\n${summarizeMessages(params.messages)}`,
     `Run metadata:\n${metadata}`,
   ].join("\n\n");
+}
+
+type ActionEvent = GeneralAICallToolEvent | GeneralAICallSubagentEvent;
+
+interface StepResult {
+  rawOutput: string;
+  parsed: GeneralAIParsedProtocol;
+  actions: ActionEvent[];
+  errorEvent?: GeneralAIProtocolEvent;
+  endpointResult: unknown;
+}
+
+interface ContextCompactionResult {
+  operations: string[];
+  summaryCount: number;
+  droppedCount: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isRuntimeInstructionMessage(message: GeneralAIMessage): boolean {
+  return (
+    message.role === "developer" ||
+    (message.role === "assistant" && message.phase === "commentary")
+  );
+}
+
+function collectBoundaryMessages(
+  messages: GeneralAIMessage[],
+  keep: NormalizedAgentParams["context"]["keep"],
+): GeneralAIMessage[] {
+  const boundary: GeneralAIMessage[] = [];
+  let userCount = 0;
+  let assistantCount = 0;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) {
+      continue;
+    }
+
+    if (
+      message.role === "user" &&
+      userCount < (keep.boundaryUserMessages ?? 0)
+    ) {
+      boundary.push(message);
+      userCount += 1;
+      continue;
+    }
+
+    if (
+      message.role === "assistant" &&
+      assistantCount < (keep.boundaryAssistantMessages ?? 0)
+    ) {
+      boundary.push(message);
+      assistantCount += 1;
+    }
+  }
+
+  return boundary.reverse();
+}
+
+function dedupeMessages(messages: GeneralAIMessage[]): GeneralAIMessage[] {
+  const seen = new Set<string>();
+  const result: GeneralAIMessage[] = [];
+
+  for (const message of messages) {
+    const key = `${message.role}:${message.phase ?? ""}:${toTextContent(message.content)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(message);
+  }
+
+  return result;
+}
+
+function buildSummaryText(
+  messages: GeneralAIMessage[],
+  params: NormalizedAgentParams,
+): string {
+  const profile = params.context.summary.profile ?? "balanced";
+  const maxItems = params.context.summary.maxItems ?? 8;
+  const snippetLength = {
+    minimal: 80,
+    balanced: 140,
+    detailed: 220,
+    comprehensive: 320,
+  }[profile] ?? 140;
+
+  const userMessages = messages.filter((message) => message.role === "user");
+  const assistantMessages = messages.filter((message) => message.role === "assistant");
+  const instructionMessages = messages.filter((message) => isRuntimeInstructionMessage(message));
+
+  const takeSnippets = (items: GeneralAIMessage[]) =>
+    items.slice(-maxItems).map((message) => {
+      const text = toTextContent(message.content).replace(/\s+/g, " ").trim();
+      return text.length > snippetLength ? `${text.slice(0, snippetLength)}...` : text;
+    }).filter(Boolean);
+
+  const sections: string[] = [];
+  sections.push(`Summary profile: ${profile}`);
+
+  if (params.context.manual.includeUserIntent && params.context.manual.note?.trim()) {
+    sections.push(`Manual retention note:\n- ${params.context.manual.note.trim()}`);
+  }
+
+  const userSnippets = takeSnippets(userMessages);
+  if (userSnippets.length > 0) {
+    sections.push(`User intents:\n${userSnippets.map((text) => `- ${text}`).join("\n")}`);
+  }
+
+  if (params.context.summary.includeFacts) {
+    const assistantSnippets = takeSnippets(assistantMessages);
+    if (assistantSnippets.length > 0) {
+      sections.push(
+        `Assistant outputs and facts:\n${assistantSnippets.map((text) => `- ${text}`).join("\n")}`,
+      );
+    }
+  }
+
+  if (params.context.summary.includeDecisions && instructionMessages.length > 0) {
+    const instructionSnippets = takeSnippets(instructionMessages);
+    sections.push(
+      `Runtime decisions and tool/subagent notes:\n${instructionSnippets.map((text) => `- ${text}`).join("\n")}`,
+    );
+  }
+
+  if (params.context.summary.includeOpenLoops) {
+    const latestUser = userMessages.at(-1);
+    if (latestUser) {
+      sections.push(`Open loop focus:\n- ${toTextContent(latestUser.content).trim()}`);
+    }
+  }
+
+  return sections.join("\n\n").trim();
+}
+
+function dropOldestMessages(
+  messages: GeneralAIMessage[],
+  keepRecentMessages: number,
+): { kept: GeneralAIMessage[]; droppedCount: number } {
+  if (messages.length <= keepRecentMessages) {
+    return { kept: messages, droppedCount: 0 };
+  }
+
+  const droppedCount = messages.length - keepRecentMessages;
+  return {
+    kept: messages.slice(-keepRecentMessages),
+    droppedCount,
+  };
 }
 
 export class AgentRuntime {
@@ -444,6 +695,9 @@ export class AgentRuntime {
   #subagentCallCount = 0;
   #protocolErrorCount = 0;
   #notes: string[] = [];
+  #contextOperations: string[] = [];
+  #contextSummaryCount = 0;
+  #contextDropCount = 0;
 
   constructor(
     private readonly deps: AgentRuntimeDependencies,
@@ -511,6 +765,7 @@ export class AgentRuntime {
     );
 
     while (this.#step < this.#params.limits.maxSteps) {
+      this.#applyContextCompaction();
       this.#step += 1;
       const stepResult = await this.#runSingleStep();
 
@@ -527,8 +782,8 @@ export class AgentRuntime {
 
       this.#recordStep(stepResult.parsed, stepResult.rawOutput, stepResult.endpointResult);
 
-      if (stepResult.action?.kind === "error") {
-        const detail = jsonStringify(stepResult.action.payload);
+      if (stepResult.errorEvent?.kind === "error") {
+        const detail = jsonStringify(stepResult.errorEvent.payload);
         if (this.#enqueueRetry("protocol_error_event", detail, stepResult.rawOutput)) {
           continue;
         }
@@ -536,12 +791,12 @@ export class AgentRuntime {
         throw new Error(`Model emitted an unrecoverable protocol error event: ${detail}`);
       }
 
-      if (stepResult.action?.kind === "call_tool") {
+      if (stepResult.actions.length > 0) {
         try {
-          await this.#handleToolCall(stepResult.action.name, stepResult.action.arguments);
+          await this.#executeActionBatch(stepResult.actions);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          if (this.#enqueueRetry("tool_call_failure", detail, stepResult.rawOutput)) {
+          if (this.#enqueueRetry("action_batch_failure", detail, stepResult.rawOutput)) {
             continue;
           }
 
@@ -550,20 +805,8 @@ export class AgentRuntime {
         continue;
       }
 
-      if (stepResult.action?.kind === "call_subagent") {
-        try {
-          await this.#handleSubagentCall(
-            stepResult.action.name,
-            stepResult.action.arguments,
-          );
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          if (this.#enqueueRetry("subagent_call_failure", detail, stepResult.rawOutput)) {
-            continue;
-          }
-
-          throw error;
-        }
+      if (this.#shouldContinueThinkingPass(stepResult.parsed, stepResult.actions)) {
+        this.#enqueueThinkingContinuation(stepResult.rawOutput);
         continue;
       }
 
@@ -608,6 +851,16 @@ export class AgentRuntime {
     }
 
     while (this.#step < this.#params.limits.maxSteps) {
+      const compaction = this.#applyContextCompaction();
+      if (compaction.operations.length > 0) {
+        yield {
+          type: "context_compacted",
+          summaryCount: compaction.summaryCount,
+          droppedCount: compaction.droppedCount,
+          operations: compaction.operations,
+        };
+      }
+
       this.#step += 1;
       yield {
         type: "step_started",
@@ -658,8 +911,8 @@ export class AgentRuntime {
         };
       }
 
-      if (stepResult.action?.kind === "error") {
-        const detail = jsonStringify(stepResult.action.payload);
+      if (stepResult.errorEvent?.kind === "error") {
+        const detail = jsonStringify(stepResult.errorEvent.payload);
         if (this.#enqueueRetry("protocol_error_event", detail, stepResult.rawOutput)) {
           yield {
             type: "warning",
@@ -671,70 +924,74 @@ export class AgentRuntime {
         throw new Error(`Model emitted an unrecoverable protocol error event: ${detail}`);
       }
 
-      if (stepResult.action?.kind === "call_tool") {
+      if (stepResult.actions.length > 0) {
+        const toolActions = stepResult.actions.filter((action) => action.kind === "call_tool");
+        const subagentActions = stepResult.actions.filter((action) => action.kind === "call_subagent");
         yield {
-          type: "tool_started",
+          type: "batch_started",
           step: this.#step,
-          name: stepResult.action.name,
-          arguments: stepResult.action.arguments,
+          tools: toolActions.length,
+          subagents: subagentActions.length,
         };
-        let result;
+
+        for (const action of toolActions) {
+          yield {
+            type: "tool_started",
+            step: this.#step,
+            name: action.name,
+            arguments: action.arguments,
+          };
+        }
+        for (const action of subagentActions) {
+          yield {
+            type: "subagent_started",
+            step: this.#step,
+            name: action.name,
+            arguments: action.arguments,
+          };
+        }
+
         try {
-          result = await this.#handleToolCall(
-            stepResult.action.name,
-            stepResult.action.arguments,
-          );
+          const results = await this.#executeActionBatch(stepResult.actions);
+          for (const result of results) {
+            if (result.kind === "call_tool") {
+              yield {
+                type: "tool_result",
+                step: this.#step,
+                name: result.name,
+                result: result.result,
+              };
+              continue;
+            }
+
+            yield {
+              type: "subagent_result",
+              step: this.#step,
+              name: result.name,
+              result: result.result,
+            };
+          }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          if (this.#enqueueRetry("tool_call_failure", detail, stepResult.rawOutput)) {
+          if (this.#enqueueRetry("action_batch_failure", detail, stepResult.rawOutput)) {
             yield {
               type: "warning",
-              message: `Retrying after tool failure: ${detail}`,
+              message: `Retrying after action batch failure: ${detail}`,
             };
             continue;
           }
 
           throw error;
         }
-        yield {
-          type: "tool_result",
-          step: this.#step,
-          name: stepResult.action.name,
-          result,
-        };
+
         continue;
       }
 
-      if (stepResult.action?.kind === "call_subagent") {
+      if (this.#shouldContinueThinkingPass(stepResult.parsed, stepResult.actions)) {
+        this.#enqueueThinkingContinuation(stepResult.rawOutput);
         yield {
-          type: "subagent_started",
-          step: this.#step,
-          name: stepResult.action.name,
-          arguments: stepResult.action.arguments,
-        };
-        let result;
-        try {
-          result = await this.#handleSubagentCall(
-            stepResult.action.name,
-            stepResult.action.arguments,
-          );
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          if (this.#enqueueRetry("subagent_call_failure", detail, stepResult.rawOutput)) {
-            yield {
-              type: "warning",
-              message: `Retrying after subagent failure: ${detail}`,
-            };
-            continue;
-          }
-
-          throw error;
-        }
-        yield {
-          type: "subagent_result",
-          step: this.#step,
-          name: stepResult.action.name,
-          result,
+          type: "warning",
+          message: "Continuing orchestrated thinking pass before final completion.",
         };
         continue;
       }
@@ -813,12 +1070,194 @@ export class AgentRuntime {
     return this.#prompt;
   }
 
-  async #runSingleStep(): Promise<{
-    rawOutput: string;
-    parsed: GeneralAIParsedProtocol;
-    action: GeneralAIProtocolEvent | undefined;
-    endpointResult: unknown;
-  }> {
+  #shouldCompactContext(): boolean {
+    if (!this.#params.context.enabled || this.#params.context.mode === "off") {
+      return false;
+    }
+
+    const mode = this.#params.context.mode;
+    const manualRequested =
+      Boolean(this.#params.context.manual.enabled) &&
+      Boolean(this.#params.context.manual.force);
+    const messageCountExceeded =
+      this.#history.length >= (this.#params.context.trigger.messageCount ?? Number.MAX_SAFE_INTEGER);
+    const turnCountExceeded =
+      countConversationTurns(this.#history) >=
+      (this.#params.context.trigger.turnCount ?? Number.MAX_SAFE_INTEGER);
+    const estimatedTokens =
+      estimateMessagesTokens(this.#history) +
+      (this.#prompt ? Math.ceil(this.#prompt.fullPrompt.length / 4) : 0);
+    const estimatedMaxTokens =
+      this.#params.context.trigger.estimatedMaxTokens ??
+      DEFAULT_CONTEXT.trigger.estimatedMaxTokens ??
+      32768;
+    const contextRatio =
+      this.#params.context.trigger.contextRatio ??
+      DEFAULT_CONTEXT.trigger.contextRatio ??
+      0.9;
+    const estimatedRatio =
+      estimatedTokens / estimatedMaxTokens;
+    const contextRatioExceeded =
+      estimatedRatio >= contextRatio;
+
+    if (mode === "manual") {
+      return manualRequested;
+    }
+
+    if (mode === "auto") {
+      return messageCountExceeded || turnCountExceeded || contextRatioExceeded;
+    }
+
+    return (
+      manualRequested ||
+      messageCountExceeded ||
+      turnCountExceeded ||
+      contextRatioExceeded
+    );
+  }
+
+  #applyContextCompaction(): ContextCompactionResult {
+    if (!this.#shouldCompactContext()) {
+      return {
+        operations: [],
+        summaryCount: 0,
+        droppedCount: 0,
+      };
+    }
+
+    const stickyPrefixLength = this.#history.findIndex((message) =>
+      message.role === "user" || message.role === "assistant" || message.role === "summary"
+    );
+    const prefixEnd = stickyPrefixLength === -1 ? this.#history.length : stickyPrefixLength;
+    const stickyPrefix = this.#history.slice(0, prefixEnd);
+    const compressible = this.#history.slice(prefixEnd);
+    const recentMessageCount =
+      this.#params.context.keep.recentMessages ??
+      DEFAULT_CONTEXT.keep.recentMessages ??
+      6;
+    const keepRecent = clamp(
+      recentMessageCount,
+      1,
+      Math.max(1, compressible.length),
+    );
+
+    if (compressible.length <= keepRecent) {
+      return {
+        operations: [],
+        summaryCount: 0,
+        droppedCount: 0,
+      };
+    }
+
+    const recent = compressible.slice(-keepRecent);
+    const boundary = collectBoundaryMessages(
+      compressible.slice(0, -keepRecent),
+      this.#params.context.keep,
+    );
+    const keptTail = dedupeMessages([...boundary, ...recent]);
+    const protectedKeys = new Set(
+      keptTail.map((message) => `${message.role}:${message.phase ?? ""}:${toTextContent(message.content)}`),
+    );
+    const reducible = compressible.filter((message) => {
+      const key = `${message.role}:${message.phase ?? ""}:${toTextContent(message.content)}`;
+      return !protectedKeys.has(key);
+    });
+
+    if (reducible.length === 0) {
+      return {
+        operations: [],
+        summaryCount: 0,
+        droppedCount: 0,
+      };
+    }
+
+    let operations: string[] = [];
+    let summaryCount = 0;
+    let droppedCount = 0;
+    let nextHistory = [...stickyPrefix, ...keptTail];
+    const strategy = this.#params.context.strategy;
+
+    if (strategy === "summarize" || strategy === "hybrid") {
+      const summaryText = buildSummaryText(reducible, this.#params);
+      if (summaryText) {
+        nextHistory = [
+          ...stickyPrefix,
+          {
+            role: "summary",
+            content: summaryText,
+          },
+          ...keptTail,
+        ];
+        operations.push(`summarized ${reducible.length} message(s) into one summary block`);
+        summaryCount += 1;
+      }
+    }
+
+    if (strategy === "drop_nonessential") {
+      const nonessential = reducible.filter((message) => isRuntimeInstructionMessage(message));
+      const essential = reducible.filter((message) => !isRuntimeInstructionMessage(message));
+      droppedCount += nonessential.length;
+      operations.push(`dropped ${nonessential.length} nonessential runtime message(s)`);
+      nextHistory = [...stickyPrefix, ...essential, ...keptTail];
+    }
+
+    if (strategy === "drop_oldest") {
+      droppedCount += reducible.length;
+      operations.push(`dropped ${reducible.length} oldest message(s)`);
+    }
+
+    if (strategy === "hybrid") {
+      const estimatedTokens = estimateMessagesTokens(nextHistory);
+      const estimatedMaxTokens =
+        this.#params.context.trigger.estimatedMaxTokens ??
+        DEFAULT_CONTEXT.trigger.estimatedMaxTokens ??
+        32768;
+      const contextRatio =
+        this.#params.context.trigger.contextRatio ??
+        DEFAULT_CONTEXT.trigger.contextRatio ??
+        0.9;
+      const targetTokens = Math.floor(
+        estimatedMaxTokens * contextRatio,
+      );
+      if (estimatedTokens > targetTokens) {
+        const stickyAndSummary = nextHistory.filter((message) =>
+          message.role === "system" ||
+          message.role === "developer" ||
+          message.role === "summary"
+        );
+        const conversationTail = nextHistory.filter((message) =>
+          message.role === "user" || message.role === "assistant"
+        );
+        const availableTail = Math.max(
+          recentMessageCount,
+          conversationTail.length - 1,
+        );
+        const trimmed = dropOldestMessages(conversationTail, availableTail);
+        droppedCount += trimmed.droppedCount;
+        if (trimmed.droppedCount > 0) {
+          operations.push(`trimmed ${trimmed.droppedCount} additional message(s) after summarization`);
+        }
+        nextHistory = [...stickyAndSummary, ...trimmed.kept];
+      }
+    }
+
+    if (strategy === "drop_oldest") {
+      nextHistory = [...stickyPrefix, ...keptTail];
+    }
+
+    this.#history = nextHistory.map(cloneMessage);
+    this.#contextOperations.push(...operations);
+    this.#contextSummaryCount += summaryCount;
+    this.#contextDropCount += droppedCount;
+
+    return {
+      operations,
+      summaryCount,
+      droppedCount,
+    };
+  }
+
+  async #runSingleStep(): Promise<StepResult> {
     if (this.#params.endpoint === "responses") {
       const body = this.#buildResponsesRequest(false);
       const result = await this.deps.openai.responses.create(body);
@@ -827,11 +1266,10 @@ export class AgentRuntime {
       return {
         rawOutput,
         parsed,
-        action: parsed.events.find((event) =>
+        actions: parsed.events.filter((event) =>
           event.kind === "call_tool" || event.kind === "call_subagent"
-            ? true
-            : event.kind === "error"
-        ),
+        ) as ActionEvent[],
+        errorEvent: parsed.events.find((event) => event.kind === "error"),
         endpointResult: result,
       };
     }
@@ -843,24 +1281,18 @@ export class AgentRuntime {
     return {
       rawOutput,
       parsed,
-      action: parsed.events.find((event) =>
+      actions: parsed.events.filter((event) =>
         event.kind === "call_tool" || event.kind === "call_subagent"
-          ? true
-          : event.kind === "error"
-      ),
+      ) as ActionEvent[],
+      errorEvent: parsed.events.find((event) => event.kind === "error"),
       endpointResult: result,
     };
   }
 
-  async #runSingleStreamingStep(): Promise<{
-    rawOutput: string;
-    rawDeltas: string[];
-    parsed: GeneralAIParsedProtocol;
-    action: GeneralAIProtocolEvent | undefined;
-    endpointResult: unknown;
-  }> {
+  async #runSingleStreamingStep(): Promise<StepResult & { rawDeltas: string[] }> {
     const rawDeltas: string[] = [];
     const parser = new ProtocolStreamParser({ step: this.#step });
+    let parserError: string | undefined;
 
     if (this.#params.endpoint === "responses") {
       const stream = this.deps.openai.responses.stream(this.#buildResponsesRequest(true));
@@ -870,21 +1302,51 @@ export class AgentRuntime {
         }
 
         rawDeltas.push(event.delta);
-        parser.push(event.delta);
+        if (!parserError) {
+          try {
+            parser.push(event.delta);
+          } catch (error) {
+            parserError = `Streaming protocol parser failure on step ${this.#step}: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+        }
       }
 
       const endpointResult = await stream.finalResponse();
       const rawOutput = rawDeltas.join("") || endpointResult.output_text;
-      const parsed = parser.end();
+      const parsed = parserError
+        ? (() => {
+            const reparsed = this.#parseRawOutput(rawOutput);
+            return {
+              ...reparsed,
+              warnings: [parserError, ...reparsed.warnings],
+            };
+          })()
+        : (() => {
+            try {
+              return parser.end();
+            } catch (error) {
+              const reparsed = this.#parseRawOutput(rawOutput);
+              return {
+                ...reparsed,
+                warnings: [
+                  `Streaming protocol parser failure on step ${this.#step}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                  ...reparsed.warnings,
+                ],
+              };
+            }
+          })();
       return {
         rawOutput,
         rawDeltas,
         parsed,
-        action: parsed.events.find((event) =>
+        actions: parsed.events.filter((event) =>
           event.kind === "call_tool" || event.kind === "call_subagent"
-            ? true
-            : event.kind === "error"
-        ),
+        ) as ActionEvent[],
+        errorEvent: parsed.events.find((event) => event.kind === "error"),
         endpointResult,
       };
     }
@@ -897,21 +1359,51 @@ export class AgentRuntime {
       }
 
       rawDeltas.push(delta);
-      parser.push(delta);
+      if (!parserError) {
+        try {
+          parser.push(delta);
+        } catch (error) {
+          parserError = `Streaming protocol parser failure on step ${this.#step}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
     }
 
     const endpointResult = stream.currentChatCompletionSnapshot;
     const rawOutput = rawDeltas.join("");
-    const parsed = parser.end();
+    const parsed = parserError
+      ? (() => {
+          const reparsed = this.#parseRawOutput(rawOutput);
+          return {
+            ...reparsed,
+            warnings: [parserError, ...reparsed.warnings],
+          };
+        })()
+      : (() => {
+          try {
+            return parser.end();
+          } catch (error) {
+            const reparsed = this.#parseRawOutput(rawOutput);
+            return {
+              ...reparsed,
+              warnings: [
+                `Streaming protocol parser failure on step ${this.#step}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+                ...reparsed.warnings,
+              ],
+            };
+          }
+        })();
     return {
       rawOutput,
       rawDeltas,
       parsed,
-      action: parsed.events.find((event) =>
+      actions: parsed.events.filter((event) =>
         event.kind === "call_tool" || event.kind === "call_subagent"
-          ? true
-          : event.kind === "error"
-      ),
+      ) as ActionEvent[],
+      errorEvent: parsed.events.find((event) => event.kind === "error"),
       endpointResult,
     };
   }
@@ -959,11 +1451,64 @@ export class AgentRuntime {
       this.#events.push(event);
       if (event.kind === "writing") {
         this.#cleanedChunks.push(event.content);
+      } else if (event.kind === "thinking") {
+        const thinkingCount = this.#events.filter((entry) => entry.kind === "thinking").length;
+        if (thinkingCount > this.#params.limits.maxThinkingBlocks) {
+          this.#warnings.push(
+            `Thinking block count ${thinkingCount} exceeded maxThinkingBlocks=${this.#params.limits.maxThinkingBlocks}.`,
+          );
+        }
+      } else if (event.kind === "checkpoint" && this.#params.thinking.checkpointFormat === "structured") {
+        if (!event.payload || Object.keys(event.payload).length === 0) {
+          this.#warnings.push("Structured checkpoint format is enabled but checkpoint payload was empty.");
+        }
       }
     }
   }
 
-  async #handleToolCall(name: string, args: unknown): Promise<unknown> {
+  #shouldContinueThinkingPass(
+    parsed: GeneralAIParsedProtocol,
+    actions: ActionEvent[],
+  ): boolean {
+    if (
+      this.#params.thinking.mode !== "orchestrated" &&
+      this.#params.thinking.mode !== "hybrid"
+    ) {
+      return false;
+    }
+
+    if (actions.length > 0) {
+      return false;
+    }
+
+    const kinds = parsed.events.map((event) => event.kind);
+    if (kinds.includes("done")) {
+      return false;
+    }
+
+    return kinds.includes("checkpoint") || kinds.includes("revise") || kinds.includes("writing");
+  }
+
+  #enqueueThinkingContinuation(rawOutput: string): void {
+    this.#history.push({
+      role: "assistant",
+      phase: "commentary",
+      content: rawOutput,
+    });
+    this.#history.push({
+      role: "developer",
+      content: [
+        "Continue from the latest valid state.",
+        "Run another concise thinking pass before additional writing.",
+        this.#params.thinking.checkpointFormat === "structured"
+          ? "When you emit checkpoint markers, include structured checkpoint payloads."
+          : "Use checkpoint markers when the task changes shape.",
+        "Finish with [[[status:done]]] only when the full answer is complete.",
+      ].join("\n\n"),
+    });
+  }
+
+  async #executeToolCall(name: string, args: unknown): Promise<unknown> {
     if (!this.#params.tools.enabled) {
       throw new Error(`Tool '${name}' was requested but tools are disabled.`);
     }
@@ -978,7 +1523,7 @@ export class AgentRuntime {
     }
 
     this.#toolCallCount += 1;
-    const result = await tool.execute(args as Record<string, unknown>, {
+    return await tool.execute(args as Record<string, unknown>, {
       openai: this.deps.openai,
       endpoint: this.#params.endpoint,
       model: this.#params.model,
@@ -986,6 +1531,9 @@ export class AgentRuntime {
       sessionId: this.#params.memory.sessionId,
       params: this.#params,
     });
+  }
+
+  #appendToolResultToHistory(name: string, args: unknown, result: unknown): void {
     this.#notes.push(`Tool ${name} result: ${jsonStringify(result)}`);
     this.#history.push({
       role: "assistant",
@@ -1005,10 +1553,9 @@ export class AgentRuntime {
         "Continue from the latest state. Do not repeat completed tool calls.",
       ].join("\n\n"),
     });
-    return result;
   }
 
-  async #handleSubagentCall(
+  async #executeSubagentCall(
     name: string,
     args: unknown,
   ): Promise<GeneralAIAgentResult> {
@@ -1026,12 +1573,16 @@ export class AgentRuntime {
     }
 
     this.#subagentCallCount += 1;
+    if (this.depth + 1 > this.#params.limits.maxDepth) {
+      throw new Error(`Subagent depth limit exceeded for '${name}'.`);
+    }
+
     const payloadText =
       typeof args === "string"
         ? args
         : jsonStringify(args);
 
-    const result = await this.deps.runSubagent(
+    return await this.deps.runSubagent(
       {
         endpoint: subagent.endpoint ?? this.#params.endpoint,
         model: subagent.model ?? this.#params.model,
@@ -1056,6 +1607,7 @@ export class AgentRuntime {
         personality: subagent.personality ?? this.#params.personality,
         safety: subagent.safety ?? this.#params.safety,
         thinking: subagent.thinking ?? this.#params.thinking,
+        context: subagent.context ?? this.#params.context,
         tools: filterToolsForSubagent(
           subagent.tools
             ? normalizeAgentParams(this.deps, {
@@ -1068,8 +1620,10 @@ export class AgentRuntime {
         subagents: subagent.subagents ?? { enabled: false, registry: {} },
         prompts: mergePromptOverrides(this.#params.prompts, subagent.prompts),
         limits: subagent.limits ?? this.#params.limits,
-        request: subagent.request ?? this.#params.request,
-        compatibility: this.#params.compatibility,
+        request: mergeRequestOverrides(this.#params.request, subagent.request),
+        compatibility: subagent.compatibility ?? this.#params.compatibility,
+        memory: subagent.memory ?? this.#params.memory,
+        parallel: this.#params.parallel,
         metadata: {
           parent_subagent: name,
           depth: String(this.depth + 1),
@@ -1077,7 +1631,13 @@ export class AgentRuntime {
       },
       this.depth + 1,
     );
+  }
 
+  #appendSubagentResultToHistory(
+    name: string,
+    args: unknown,
+    result: GeneralAIAgentResult,
+  ): void {
     this.#notes.push(`Subagent ${name} result: ${result.cleaned}`);
     this.#history.push({
       role: "assistant",
@@ -1097,7 +1657,136 @@ export class AgentRuntime {
         "Continue from the latest state. Do not repeat completed subagent calls.",
       ].join("\n\n"),
     });
-    return result;
+  }
+
+  async #executeActionBatch(
+    actions: ActionEvent[],
+  ): Promise<
+    Array<
+      | { kind: "call_tool"; name: string; result: unknown }
+      | { kind: "call_subagent"; name: string; result: GeneralAIAgentResult }
+    >
+  > {
+    const uniqueActions = actions.filter((action, index) => {
+      const key = `${action.kind}:${action.name}:${jsonStringify(action.arguments)}`;
+      return (
+        actions.findIndex((entry) =>
+          `${entry.kind}:${entry.name}:${jsonStringify(entry.arguments)}` === key
+        ) === index
+      );
+    });
+
+    if (uniqueActions.length > this.#params.parallel.maxCallsPerStep) {
+      throw new Error(
+        `Action batch size ${uniqueActions.length} exceeded maxCallsPerStep=${this.#params.parallel.maxCallsPerStep}.`,
+      );
+    }
+
+    const toolActions = uniqueActions.filter(
+      (action): action is GeneralAICallToolEvent => action.kind === "call_tool",
+    );
+    const subagentActions = uniqueActions.filter(
+      (action): action is GeneralAICallSubagentEvent => action.kind === "call_subagent",
+    );
+
+    if (
+      !this.#params.parallel.allowMixedToolAndSubagentParallelism &&
+      toolActions.length > 0 &&
+      subagentActions.length > 0
+    ) {
+      throw new Error("Mixed tool and subagent parallelism is disabled for this run.");
+    }
+
+    if (uniqueActions.length > this.#params.parallel.maxParallelActions) {
+      throw new Error(
+        `Parallel action count ${uniqueActions.length} exceeded maxParallelActions=${this.#params.parallel.maxParallelActions}.`,
+      );
+    }
+
+    if (toolActions.length > this.#params.parallel.maxParallelTools) {
+      throw new Error(
+        `Parallel tool count ${toolActions.length} exceeded maxParallelTools=${this.#params.parallel.maxParallelTools}.`,
+      );
+    }
+
+    if (subagentActions.length > this.#params.parallel.maxParallelSubagents) {
+      throw new Error(
+        `Parallel subagent count ${subagentActions.length} exceeded maxParallelSubagents=${this.#params.parallel.maxParallelSubagents}.`,
+      );
+    }
+
+    const actionResults = this.#params.parallel.enabled
+      ? await Promise.all(
+          uniqueActions.map(async (action) => {
+            if (action.kind === "call_tool") {
+              return {
+                action,
+                result: await this.#executeToolCall(action.name, action.arguments),
+              } as const;
+            }
+
+            return {
+              action,
+              result: await this.#executeSubagentCall(action.name, action.arguments),
+            } as const;
+          }),
+        )
+      : await (async () => {
+          const results: Array<
+            | { action: GeneralAICallToolEvent; result: unknown }
+            | { action: GeneralAICallSubagentEvent; result: GeneralAIAgentResult }
+          > = [];
+          for (const action of uniqueActions) {
+            if (action.kind === "call_tool") {
+              results.push({
+                action,
+                result: await this.#executeToolCall(action.name, action.arguments),
+              });
+              continue;
+            }
+
+            results.push({
+              action,
+              result: await this.#executeSubagentCall(action.name, action.arguments),
+            });
+          }
+          return results;
+        })();
+
+    const actionMap = new Map(actionResults.map((entry) => [entry.action, entry.result] as const));
+    const orderedResults: Array<
+      | { kind: "call_tool"; name: string; result: unknown }
+      | { kind: "call_subagent"; name: string; result: GeneralAIAgentResult }
+    > = [];
+
+    for (const action of uniqueActions) {
+      if (action.kind === "call_tool") {
+        const result = actionMap.get(action);
+        if (result === undefined) {
+          throw new Error(`Tool batch result for '${action.name}' was missing.`);
+        }
+        this.#appendToolResultToHistory(action.name, action.arguments, result);
+        orderedResults.push({
+          kind: "call_tool",
+          name: action.name,
+          result,
+        });
+        continue;
+      }
+
+      const result = actionMap.get(action) as GeneralAIAgentResult | undefined;
+      if (!result) {
+        throw new Error(`Subagent batch result for '${action.name}' was missing.`);
+      }
+      this.#appendSubagentResultToHistory(action.name, action.arguments, result);
+      orderedResults.push({
+        kind: "call_subagent",
+        name: action.name,
+        result,
+      });
+    }
+
+    return orderedResults;
   }
 
   async #finalize(prompt: Awaited<ReturnType<typeof renderPromptSections>>, strippedRequestKeys: string[]) {
@@ -1130,6 +1819,9 @@ export class AgentRuntime {
         toolCallCount: this.#toolCallCount,
         subagentCallCount: this.#subagentCallCount,
         protocolErrorCount: this.#protocolErrorCount,
+        contextOperations: [...this.#contextOperations],
+        contextSummaryCount: this.#contextSummaryCount,
+        contextDropCount: this.#contextDropCount,
         memorySessionId: this.#params.memory.sessionId,
         endpointResults: [...this.#endpointResults],
       },
@@ -1160,11 +1852,9 @@ export class AgentRuntime {
       this.#params.request?.chat_completions,
       RESERVED_AGENT_CHAT_KEYS,
     );
+    const compatibilityProfile = resolveCompatibilityProfile(this.#params.compatibility);
     const promptMessage = {
-      role:
-        this.#params.compatibility?.chatRoleMode === "classic"
-          ? ("system" as const)
-          : ("developer" as const),
+      role: compatibilityProfile === "modern" ? ("developer" as const) : ("system" as const),
       content: this.#prompt?.fullPrompt ?? "",
     };
 

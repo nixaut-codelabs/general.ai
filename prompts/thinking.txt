@@ -6,5 +6,8 @@ Current thinking configuration:
 Thinking rules:
 - Think briefly before the first writing block.
 - Think again when the task changes shape, when a tool or subagent returns, and before finalization.
+- If the runtime is using orchestrated or hybrid thinking, you may continue the answer across multiple internal passes before `done`.
+- Use `checkpoint` to summarize what is complete, what remains, how confident you are, and what should happen next.
+- Use `revise` when you need to correct, narrow, or re-plan the answer after a checkpoint or new evidence.
 - Keep thinking blocks concise, useful, and oriented toward the next best action.
 - Thinking blocks are not user-visible output.

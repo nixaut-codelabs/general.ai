@@ -10,5 +10,8 @@ export declare function compactWhitespace(value: string): string;
 export declare function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T>;
 export declare function mergeStringLists(...lists: Array<string[] | undefined>): string[];
 export declare function summarizeMessages(messages: GeneralAIMessage[], maxItems?: number): string;
+export declare function estimateTextTokens(text: string): number;
+export declare function estimateMessagesTokens(messages: GeneralAIMessage[]): number;
+export declare function countConversationTurns(messages: GeneralAIMessage[]): number;
 export declare function buildMemorySnapshot(messages: GeneralAIMessage[], cleaned: string, notes: string[], previous?: GeneralAIMemorySnapshot | null): GeneralAIMemorySnapshot;
 export declare function aggregateUsage(entries: Array<Response | ChatCompletion | undefined>): GeneralAIUsageSummary;

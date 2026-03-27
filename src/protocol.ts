@@ -90,6 +90,17 @@ function parseMarker(
   if (inner === "checkpoint") {
     const event: GeneralAICheckpointEvent = {
       kind: "checkpoint",
+      payload: {},
+      step: context.step,
+      rawMarker,
+    };
+    return event;
+  }
+
+  if (inner.startsWith("checkpoint:")) {
+    const event: GeneralAICheckpointEvent = {
+      kind: "checkpoint",
+      payload: parseJsonPayload(inner.slice("checkpoint:".length), rawMarker),
       step: context.step,
       rawMarker,
     };
@@ -99,6 +110,17 @@ function parseMarker(
   if (inner === "revise") {
     const event: GeneralAIReviseEvent = {
       kind: "revise",
+      payload: {},
+      step: context.step,
+      rawMarker,
+    };
+    return event;
+  }
+
+  if (inner.startsWith("revise:")) {
+    const event: GeneralAIReviseEvent = {
+      kind: "revise",
+      payload: parseJsonPayload(inner.slice("revise:".length), rawMarker),
       step: context.step,
       rawMarker,
     };

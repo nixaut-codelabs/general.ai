@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionChunk, ChatCompletionCreateParams, ChatCompletionMessageParam } from "openai/resources/chat/completions/completions";
 import type { Response, ResponseCreateParams, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses";
 export type GeneralAIEndpoint = "responses" | "chat_completions";
-export type GeneralAIMessageRole = "system" | "developer" | "user" | "assistant";
+export type GeneralAIMessageRole = "system" | "developer" | "user" | "assistant" | "summary";
 export type GeneralAIPhase = "commentary" | "final_answer";
 export interface GeneralAITextPart {
     type: "text";
@@ -82,9 +82,11 @@ export interface GeneralAISafetyAssessment {
 export type GeneralAIThinkingStrategy = "checkpointed" | "minimal" | "none";
 export interface GeneralAIThinkingConfig {
     enabled?: boolean;
+    mode?: "none" | "inline" | "orchestrated" | "hybrid";
     strategy?: GeneralAIThinkingStrategy;
     effort?: "minimal" | "low" | "medium" | "high";
     checkpoints?: string[];
+    checkpointFormat?: "marker" | "structured";
     prompt?: string;
 }
 export interface GeneralAILimits {
@@ -93,6 +95,12 @@ export interface GeneralAILimits {
     maxSubagentCalls?: number;
     maxThinkingBlocks?: number;
     maxProtocolErrors?: number;
+    maxParallelActions?: number;
+    maxParallelTools?: number;
+    maxParallelSubagents?: number;
+    maxCallsPerStep?: number;
+    maxDepth?: number;
+    timeoutMs?: number;
 }
 export interface GeneralAIMemorySnapshot {
     summary?: string;
@@ -117,6 +125,53 @@ export interface GeneralAIMemoryConfig {
     load?: boolean;
     save?: boolean;
     adapter?: GeneralAIMemoryAdapter;
+    prompt?: string;
+}
+export interface GeneralAIParallelConfig {
+    enabled?: boolean;
+    maxParallelActions?: number;
+    maxParallelTools?: number;
+    maxParallelSubagents?: number;
+    maxCallsPerStep?: number;
+    allowMixedToolAndSubagentParallelism?: boolean;
+}
+export type GeneralAIContextMode = "off" | "auto" | "manual" | "hybrid";
+export type GeneralAIContextStrategy = "summarize" | "drop_oldest" | "drop_nonessential" | "hybrid";
+export type GeneralAIContextSummaryProfile = "minimal" | "balanced" | "detailed" | "comprehensive";
+export interface GeneralAIContextTriggerConfig {
+    contextRatio?: number;
+    messageCount?: number;
+    turnCount?: number;
+    estimatedMaxTokens?: number;
+}
+export interface GeneralAIContextKeepConfig {
+    recentMessages?: number;
+    boundaryUserMessages?: number;
+    boundaryAssistantMessages?: number;
+}
+export interface GeneralAIContextSummaryConfig {
+    profile?: GeneralAIContextSummaryProfile;
+    includeFacts?: boolean;
+    includePreferences?: boolean;
+    includeOpenLoops?: boolean;
+    includeDecisions?: boolean;
+    includeArtifacts?: boolean;
+    maxItems?: number;
+}
+export interface GeneralAIContextManualConfig {
+    enabled?: boolean;
+    force?: boolean;
+    includeUserIntent?: boolean;
+    note?: string;
+}
+export interface GeneralAIContextConfig {
+    enabled?: boolean;
+    mode?: GeneralAIContextMode;
+    strategy?: GeneralAIContextStrategy;
+    trigger?: GeneralAIContextTriggerConfig;
+    keep?: GeneralAIContextKeepConfig;
+    summary?: GeneralAIContextSummaryConfig;
+    manual?: GeneralAIContextManualConfig;
     prompt?: string;
 }
 export interface GeneralAIToolExecutionContext {
@@ -154,11 +209,14 @@ export interface GeneralAISubagentDefinition {
     personality?: GeneralAIPersonalityConfig;
     safety?: GeneralAISafetyConfig;
     thinking?: GeneralAIThinkingConfig;
+    context?: GeneralAIContextConfig;
     prompts?: GeneralAIPromptOverrides;
     limits?: GeneralAILimits;
     tools?: GeneralAIToolsConfig;
     subagents?: GeneralAISubagentsConfig;
     request?: GeneralAIRequestOverrides;
+    compatibility?: GeneralAICompatibilityConfig;
+    memory?: GeneralAIMemoryConfig;
 }
 export interface GeneralAISubagentInvocationContext {
     openai: OpenAI;
@@ -175,7 +233,9 @@ export interface GeneralAIRequestOverrides {
     responses?: Partial<ResponseCreateParams>;
     chat_completions?: Partial<ChatCompletionCreateParams>;
 }
+export type GeneralAICompatibilityProfile = "auto" | "modern" | "classic" | "classic_v2";
 export interface GeneralAICompatibilityConfig {
+    profile?: GeneralAICompatibilityProfile;
     chatRoleMode?: "modern" | "classic";
 }
 export interface GeneralAIAgentParams {
@@ -185,6 +245,8 @@ export interface GeneralAIAgentParams {
     personality?: GeneralAIPersonalityConfig;
     safety?: GeneralAISafetyConfig;
     thinking?: GeneralAIThinkingConfig;
+    parallel?: GeneralAIParallelConfig;
+    context?: GeneralAIContextConfig;
     tools?: GeneralAIToolsConfig;
     subagents?: GeneralAISubagentsConfig;
     memory?: GeneralAIMemoryConfig;
@@ -244,9 +306,11 @@ export interface GeneralAICallSubagentEvent extends GeneralAIProtocolEventBase {
 }
 export interface GeneralAICheckpointEvent extends GeneralAIProtocolEventBase {
     kind: "checkpoint";
+    payload?: Record<string, unknown>;
 }
 export interface GeneralAIReviseEvent extends GeneralAIProtocolEventBase {
     kind: "revise";
+    payload?: Record<string, unknown>;
 }
 export interface GeneralAIDoneEvent extends GeneralAIProtocolEventBase {
     kind: "done";
@@ -274,6 +338,9 @@ export interface GeneralAIAgentMeta {
     toolCallCount: number;
     subagentCallCount: number;
     protocolErrorCount: number;
+    contextOperations: string[];
+    contextSummaryCount: number;
+    contextDropCount: number;
     memorySessionId?: string;
     endpointResults: unknown[];
 }
@@ -308,6 +375,10 @@ export type GeneralAIAgentStreamEvent = {
     step: number;
     event: GeneralAIProtocolEvent;
 } | {
+    type: "thinking_delta";
+    step: number;
+    text: string;
+} | {
     type: "tool_started";
     step: number;
     name: string;
@@ -327,6 +398,16 @@ export type GeneralAIAgentStreamEvent = {
     step: number;
     name: string;
     result: GeneralAIAgentResult;
+} | {
+    type: "batch_started";
+    step: number;
+    tools: number;
+    subagents: number;
+} | {
+    type: "context_compacted";
+    summaryCount: number;
+    droppedCount: number;
+    operations: string[];
 } | {
     type: "warning";
     message: string;

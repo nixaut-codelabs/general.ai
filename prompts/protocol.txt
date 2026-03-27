@@ -9,8 +9,8 @@ Valid single-line action markers:
 - `[[[status:output_safety:{...}]]]`
 - `[[[status:call_tool:"tool_name":{...}]]]`
 - `[[[status:call_subagent:"subagent_name":{...}]]]`
-- `[[[status:checkpoint]]]`
-- `[[[status:revise]]]`
+- `[[[status:checkpoint:{...}]]]`
+- `[[[status:revise:{...}]]]`
 - `[[[status:error:{...}]]]`
 - `[[[status:done]]]`
 
@@ -28,7 +28,8 @@ Protocol requirements:
 - JSON payloads must be strict JSON with double quotes and no trailing commas.
 - `thinking` and `writing` blocks continue until the next marker line.
 - For block-form JSON markers, the JSON payload continues until the next marker line.
-- If you call a tool or subagent, emit only the marker and then stop the turn.
+- If you call tools or subagents, you may emit multiple call markers in the same turn when they are independent and materially necessary.
+- After the final tool/subagent call marker in a turn, stop the turn immediately.
 - Do not output stray text outside `thinking` or `writing` blocks.
 - Do not wrap markers in code fences.
 - Do not invent extra marker kinds.
@@ -39,6 +40,8 @@ Canonical examples:
 - `[[[status:writing]]]` then the visible answer text, then the next marker on a new line.
 - `[[[status:call_tool:"tool_name":{"key":"value"}]]]` and then stop the turn immediately.
 - `[[[status:call_subagent:"subagent_name":{"task":"..."}]]]` and then stop the turn immediately.
+- `[[[status:checkpoint:{"completed":["first_part"],"remaining":["second_part"],"confidence":"medium","next":"continue"}]]]`
+- `[[[status:revise:{"reason":"new evidence","next":"rewrite section two"}]]]`
 
 Target sequence:
 1. Start with `thinking`.
@@ -50,5 +53,6 @@ Target sequence:
 
 Execution discipline:
 - If a tool or subagent already returned a useful result, continue from that result instead of repeating the same call.
+- If multiple independent tool or subagent calls are required, emit all of them in one turn instead of spreading them across redundant retries.
 - If nested tools or nested subagents are unavailable, solve the task directly with the resources currently available.
 - If the runtime reports a recoverable protocol or execution issue, correct only that issue and continue from the latest valid state.

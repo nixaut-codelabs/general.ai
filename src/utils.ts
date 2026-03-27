@@ -94,6 +94,36 @@ export function summarizeMessages(messages: GeneralAIMessage[], maxItems = 6): s
     .join("\n");
 }
 
+export function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export function estimateMessagesTokens(messages: GeneralAIMessage[]): number {
+  return messages.reduce((total, message) => {
+    const content = toTextContent(message.content);
+    return total + estimateTextTokens(content) + 4;
+  }, 0);
+}
+
+export function countConversationTurns(messages: GeneralAIMessage[]): number {
+  let turns = 0;
+  let openUserTurn = false;
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      turns += 1;
+      openUserTurn = true;
+      continue;
+    }
+
+    if (message.role === "assistant" && openUserTurn) {
+      openUserTurn = false;
+    }
+  }
+
+  return turns;
+}
+
 export function buildMemorySnapshot(
   messages: GeneralAIMessage[],
   cleaned: string,

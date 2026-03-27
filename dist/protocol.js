@@ -38,6 +38,16 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
     if (inner === "checkpoint") {
         const event = {
             kind: "checkpoint",
+            payload: {},
+            step: context.step,
+            rawMarker,
+        };
+        return event;
+    }
+    if (inner.startsWith("checkpoint:")) {
+        const event = {
+            kind: "checkpoint",
+            payload: parseJsonPayload(inner.slice("checkpoint:".length), rawMarker),
             step: context.step,
             rawMarker,
         };
@@ -46,6 +56,16 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
     if (inner === "revise") {
         const event = {
             kind: "revise",
+            payload: {},
+            step: context.step,
+            rawMarker,
+        };
+        return event;
+    }
+    if (inner.startsWith("revise:")) {
+        const event = {
+            kind: "revise",
+            payload: parseJsonPayload(inner.slice("revise:".length), rawMarker),
             step: context.step,
             rawMarker,
         };

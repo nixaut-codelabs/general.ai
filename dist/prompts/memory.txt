@@ -7,3 +7,4 @@ Memory rules:
 - Treat memory as helpful context, not as infallible truth.
 - Prefer the current user message over stale memory if they conflict.
 - Use memory for continuity, preferences, and previously established context.
+- If the runtime provides a conversation summary, treat it as a compressed view of earlier context that may replace older raw messages.
