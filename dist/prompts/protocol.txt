@@ -5,21 +5,19 @@ Valid block openers:
 - `[[[status:writing]]]`
 
 Valid single-line action markers:
-- `[[[status:input_safety:{...}]]]`
-- `[[[status:output_safety:{...}]]]`
 - `[[[status:call_tool:"tool_name":{...}]]]`
 - `[[[status:call_subagent:"subagent_name":{...}]]]`
 - `[[[status:checkpoint:{...}]]]`
 - `[[[status:revise:{...}]]]`
 - `[[[status:error:{...}]]]`
 - `[[[status:done]]]`
+{block:protocol_safety_single_line_markers}
 
 Also accepted when a model struggles with inline JSON:
-- `[[[status:input_safety]]]` followed by a JSON object on the next lines
-- `[[[status:output_safety]]]` followed by a JSON object on the next lines
 - `[[[status:error]]]` followed by a JSON object on the next lines
 - `[[[status:call_tool:"tool_name"]]]` followed by a JSON object on the next lines
 - `[[[status:call_subagent:"subagent_name"]]]` followed by a JSON object on the next lines
+{block:protocol_safety_block_markers}
 
 Protocol requirements:
 - Marker lines must start at the beginning of a line.
@@ -35,6 +33,8 @@ Protocol requirements:
 - Do not invent extra marker kinds.
 - Prefer the canonical `]]]` closing form. If you accidentally produce a malformed marker, fix it on the next attempt when the runtime retries you.
 
+{block:intelligence_protocol_guidance}
+
 Canonical examples:
 - `[[[status:thinking]]]` then a multiline reasoning block, then the next marker on a new line.
 - `[[[status:writing]]]` then the visible answer text, then the next marker on a new line.
@@ -45,14 +45,11 @@ Canonical examples:
 
 Target sequence:
 1. Start with `thinking`.
-2. Emit `input_safety`.
-3. If the request is blocked, write a refusal and finish with `done`.
-4. Otherwise continue with `writing`, `checkpoint`, `revise`, `call_tool`, or `call_subagent` as needed.
-5. Emit exactly one final `output_safety` near the end unless an early hard refusal is required.
-6. Finish with `done`.
+{block:protocol_target_sequence}
 
 Execution discipline:
 - If a tool or subagent already returned a useful result, continue from that result instead of repeating the same call.
 - If multiple independent tool or subagent calls are required, emit all of them in one turn instead of spreading them across redundant retries.
 - If nested tools or nested subagents are unavailable, solve the task directly with the resources currently available.
 - If the runtime reports a recoverable protocol or execution issue, correct only that issue and continue from the latest valid state.
+- `done` is the preferred explicit finalizer, but a fully complete final writing block may still be treated as complete by the runtime.

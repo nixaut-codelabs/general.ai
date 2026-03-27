@@ -46,4 +46,59 @@ export function createOpenAIWebSearchTool(options) {
         },
     });
 }
+export function createCalculatorTool(options = {}) {
+    return defineTool({
+        name: options.name ?? "calculator",
+        description: options.description ??
+            "Perform basic arithmetic on two numbers: add, subtract, multiply, or divide.",
+        inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                left: {
+                    type: "number",
+                    description: "The left-hand numeric operand.",
+                },
+                right: {
+                    type: "number",
+                    description: "The right-hand numeric operand.",
+                },
+                operation: {
+                    type: "string",
+                    enum: ["add", "subtract", "multiply", "divide"],
+                    description: "The arithmetic operation to perform.",
+                },
+            },
+            required: ["left", "right", "operation"],
+        },
+        async execute(args) {
+            let result;
+            switch (args.operation) {
+                case "add":
+                    result = args.left + args.right;
+                    break;
+                case "subtract":
+                    result = args.left - args.right;
+                    break;
+                case "multiply":
+                    result = args.left * args.right;
+                    break;
+                case "divide":
+                    if (args.right === 0) {
+                        throw new Error("Calculator tool cannot divide by zero.");
+                    }
+                    result = args.left / args.right;
+                    break;
+                default:
+                    throw new Error(`Unsupported calculator operation '${String(args.operation)}'.`);
+            }
+            return {
+                operation: args.operation,
+                left: args.left,
+                right: args.right,
+                result,
+            };
+        },
+    });
+}
 //# sourceMappingURL=tools.js.map

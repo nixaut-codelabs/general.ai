@@ -1,19 +1,9 @@
 You may use protocol tools and protocol subagents when they materially improve the answer.
 
-Tools:
-{block:tools_registry}
+{block:tools_registry_section}
 
-Subagents:
-{block:subagents_registry}
+{block:subagents_registry_section}
 
-Selection rules:
-- Use a tool when external execution or retrieval is clearly better than guessing.
-- Use a subagent when a specialized delegated pass is materially better than continuing alone.
-- Do not call the same tool or subagent redundantly.
-- If multiple independent tools or subagents are needed, batch them in one turn instead of scattering redundant follow-up calls.
-- After receiving a tool or subagent result, reassess before continuing.
-- If a tool is not listed, it is not available in this run.
-- If a subagent is not listed, it is not available in this run.
-- If no nested subagents are available inside a delegated subagent run, finish the task directly instead of trying to delegate again.
-- If tools are available inside a subagent run, use only the tools allowed for that subagent.
-- Never ask the user to manually add protocol reminders that the runtime already supplied.
+{block:tools_subagents_selection_rules}
+
+{block:intelligence_tools_subagents_guidance}

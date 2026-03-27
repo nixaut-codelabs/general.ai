@@ -11,5 +11,10 @@ export declare class ProtocolStreamParser {
     snapshot(): GeneralAIParsedProtocol;
 }
 export declare function parseProtocol(text: string, context?: ParseContext): GeneralAIParsedProtocol;
-export declare function validateProtocolSequence(events: GeneralAIProtocolEvent[], safetyEnabled: boolean): string[];
+export declare function validateProtocolSequence(events: GeneralAIProtocolEvent[], safetyEnabled: boolean, thinkingEnabled?: boolean): string[];
+export declare function inferImplicitSafetyEvents(events: GeneralAIProtocolEvent[], safetyEnabled: boolean): GeneralAIProtocolEvent[];
+export declare function inferImplicitDoneEvent(events: GeneralAIProtocolEvent[]): {
+    events: GeneralAIProtocolEvent[];
+    inferred: boolean;
+};
 export {};

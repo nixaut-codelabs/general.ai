@@ -3,13 +3,13 @@
 Beta-stage, TypeScript-first OpenAI-compatible orchestration runtime for Node and Bun.
 
 Use `native` when you want exact SDK behavior.  
-Use `agent` when you want protocol-guided orchestration, tools, subagents, retries, context management, and cleaned output.
+Use `agent` when you want protocol-guided orchestration, tools, subagents, retries, context management, provider key rotation, request queueing, and cleaned output.
 
 General.AI is not a thin wrapper. It is a protocol-guided orchestration runtime designed to make model behavior more stable and controllable.
 
 Tested heavily on NVIDIA-compatible OpenAI-style endpoints. Broader provider validation is in progress.
 
-> This README follows the current beta track of General.AI. If you are on the stable `latest` channel, newer capabilities such as context management/compression, structured checkpoints, parallel action batching, and `classic_v2` compatibility may not be available yet. Use the beta install instructions below when you want the features called out in the Beta Changelog.
+> This README follows the current beta track of General.AI. If you are on the stable `latest` channel, newer capabilities such as context management/compression, structured checkpoints, parallel action batching, provider key rotation, provider request queueing, `classic_v2` compatibility, runtime presets, intelligence-aware prompt guidance, and soft-required `done` handling may not be available yet. Use the beta install instructions below when you want the features called out in the Beta Changelog.
 
 [![npm version](https://img.shields.io/npm/v/@lightining/general.ai?color=cb3837&label=npm)](https://npmjs.com/package/@lightining/general.ai)
 [![npm downloads](https://img.shields.io/npm/dm/@lightining/general.ai)](https://npmjs.com/package/@lightining/general.ai)
@@ -26,10 +26,14 @@ Tested heavily on NVIDIA-compatible OpenAI-style endpoints. Broader provider val
 - [Why Use It](#why-use-it)
 - [Install](#install)
 - [Beta Install](#beta-install)
+- [Stable And Beta](#stable-and-beta)
+- [How It Compares](#how-it-compares)
 - [Quick Start](#quick-start)
 - [Killer Demo](#killer-demo)
 - [Native And Agent](#native-and-agent)
 - [Compatibility Profiles](#compatibility-profiles)
+- [Presets And Intelligence](#presets-and-intelligence)
+- [Provider Pools And Queue](#provider-pools-and-queue)
 - [Tools](#tools)
 - [Subagents](#subagents)
 - [Thinking, Safety, And Context](#thinking-safety-and-context)
@@ -37,7 +41,7 @@ Tested heavily on NVIDIA-compatible OpenAI-style endpoints. Broader provider val
 - [Prompt Overrides](#prompt-overrides)
 - [Streaming](#streaming)
 - [Testing](#testing)
-- [Beta Changelog](#beta-changelog)
+- [Beta Track Highlights](#beta-track-highlights)
 - [Package Notes](#package-notes)
 - [License](#license)
 
@@ -62,6 +66,7 @@ Use General.AI when you want:
 - more stable behavior from smaller or inconsistent models
 - a protocol-guided runtime instead of ad hoc prompt glue
 - tools, subagents, retries, cleaned output, and context handling in one place
+- provider-managed round-robin key rotation and request queueing for OpenAI-compatible gateways
 - visibility into why the runtime called a tool, opened a subagent, or compacted context
 - direct access to OpenAI-compatible APIs without losing provider-native escape hatches
 
@@ -107,6 +112,50 @@ Channel guide:
 
 If you only want the stable channel, stay on `latest`.
 
+Current beta target:
+
+- `1.2.0-beta.1`
+
+## Stable And Beta
+
+General.AI now has two channels on purpose.
+
+| Channel | Recommended when | What to expect | Tradeoff |
+| --- | --- | --- | --- |
+| `latest` | You want the slower-moving release line. | Smaller, steadier surface area and fewer moving parts. | Newer runtime capabilities can take longer to land. |
+| `beta` | You want the newest orchestration/runtime work. | Faster iteration on context management, compatibility work, provider pools, queueing, presets, intelligence guidance, and parser/recovery improvements. | More behavior may still be refined before it graduates to `latest`. |
+
+Beta-only or beta-track capabilities documented in this README:
+
+| Capability | `latest` | `beta` |
+| --- | --- | --- |
+| Provider-managed API key rotation and request queueing | Do not assume | Yes |
+| Context summarize / drop strategies | Do not assume | Yes |
+| `classic_v2` compatibility profile | Do not assume | Yes |
+| Runtime presets and `intelligence` guidance | Do not assume | Yes |
+| Soft-required `done` with inferred completion | Do not assume | Yes |
+| Built-in speed metrics and stream TPS reporting | Do not assume | Yes |
+| Ongoing parser/recovery hardening | Slower-moving | Faster-moving |
+
+If you need the features above today, install `@lightining/general.ai@beta`.
+
+## How It Compares
+
+General.AI is intentionally narrower than big frameworks. That is part of the pitch, not a bug.
+
+| Library | Best when | Where General.AI is stronger | Where General.AI is weaker |
+| --- | --- | --- | --- |
+| Raw OpenAI SDK | You want the official API surface with minimal abstraction. | Adds protocol-guided agents, cleaned output, tool/subagent orchestration, context controls, provider key rotation, and request queueing on top of an OpenAI-compatible transport. | Much smaller surface, smaller ecosystem, and not an official SDK. If you only need direct API access, the raw SDK is simpler. |
+| LangChain | You want a large integration ecosystem, prebuilt agent abstractions, and the broader LangChain/LangGraph/LangSmith stack. | More explicit about low-level protocol behavior, provider shaping, prompt assembly, cleaned-vs-raw output, and provider operations like queueing and rate-limit handoff. | Far fewer integrations, much smaller ecosystem, less mature tracing/deployment tooling, and less battle-tested overall. |
+| Vercel AI SDK | You want a unified provider API plus strong frontend/UI hooks and streaming patterns. | More focused on backend orchestration internals, protocol parsing, subagent/tool loops, and runtime recovery behavior. | Not a UI toolkit, not framework-first, and much smaller in provider coverage and frontend ergonomics. |
+
+The honest shorthand:
+
+- choose General.AI when you want an OpenAI-compatible orchestration runtime with explicit control over the runtime loop
+- choose the raw OpenAI SDK when you want official transport access and almost no abstraction
+- choose LangChain when you want breadth, integrations, and a larger agent ecosystem
+- choose the AI SDK when you want a unified provider layer with strong TypeScript and frontend ergonomics
+
 ## Quick Start
 
 ### Simple Start
@@ -147,16 +196,41 @@ const generalAI = new GeneralAI({ openai });
 const result = await generalAI.agent.generate({
   endpoint: "chat_completions",
   model: "gpt-5.4-mini",
+  preset: "classic_safe",
+  intelligence: "high",
   messages: [
     { role: "user", content: "Say hello briefly in Turkish." },
   ],
-  compatibility: {
-    profile: "classic_v2",
-  },
 });
 
 console.log(result.cleaned);
 console.log(result.meta.warnings);
+console.log(result.meta.performance.speed);
+console.log(result.meta.configuration);
+```
+
+You can also let General.AI construct and manage the provider client for you:
+
+```ts
+import { GeneralAI } from "@lightining/general.ai";
+
+const generalAI = new GeneralAI({
+  provider: {
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    apiKeys: [
+      process.env.NVIDIA_KEY_A!,
+      process.env.NVIDIA_KEY_B!,
+    ],
+    rotation: {
+      strategy: "round_robin",
+      onRateLimit: "next_key",
+      maxRateLimitHandoffs: 2,
+    },
+    queue: {
+      maxConcurrentRequests: 3,
+    },
+  },
+});
 ```
 
 Returned shape:
@@ -170,6 +244,23 @@ type GeneralAIAgentResult = {
     warnings: string[];
     prompt: RenderedPrompts;
     strippedRequestKeys: string[];
+    configuration: {
+      preset:
+        | "balanced"
+        | "strict"
+        | "fast"
+        | "agentic"
+        | "classic_safe"
+        | "research";
+      intelligence: "minimal" | "medium" | "high";
+      compatibilityProfile: "auto" | "modern" | "classic" | "classic_v2";
+      safetyEnabled: boolean;
+      thinkingEnabled: boolean;
+    };
+    completion: {
+      explicitDone: boolean;
+      inferredDone: boolean;
+    };
     stepCount: number;
     toolCallCount: number;
     subagentCallCount: number;
@@ -178,6 +269,25 @@ type GeneralAIAgentResult = {
     contextSummaryCount: number;
     contextDropCount: number;
     memorySessionId?: string;
+    performance: {
+      wallTimeMs: number;
+      requestTimeMs: number;
+      timeToFirstTokenMs?: number;
+      speed: {
+        mode: "heuristic_speed_index" | "stream_tps";
+        unit: "speed_index" | "tokens_per_second";
+        value: number;
+        label: "very_slow" | "slow" | "steady" | "fast" | "very_fast";
+        algorithm: string;
+      };
+      steps: Array<{
+        step: number;
+        stream: boolean;
+        durationMs: number;
+        firstTokenLatencyMs?: number;
+        outputWindowMs?: number;
+      }>;
+    };
     endpointResults: unknown[];
   };
   usage: {
@@ -260,6 +370,7 @@ This keeps:
 - request bodies OpenAI-native
 - response objects OpenAI-native
 - stream events OpenAI-native
+- optional provider-managed key rotation and request queueing when you construct from `provider`
 
 ### `agent`
 
@@ -303,6 +414,89 @@ What they mean:
 - `auto`: currently resolves to `modern` unless explicitly overridden
 
 If you are using stricter compatible gateways, `classic_v2` is the safest place to start.
+
+## Presets And Intelligence
+
+General.AI now separates provider shaping from model guidance intensity.
+
+Use `compatibility.profile` for provider behavior, and use `preset` plus `intelligence` for runtime posture.
+
+Available presets:
+
+- `balanced`
+- `strict`
+- `fast`
+- `agentic`
+- `classic_safe`
+- `research`
+
+Available intelligence levels:
+
+- `minimal`
+- `medium`
+- `high`
+
+Example:
+
+```ts
+const result = await generalAI.agent.generate({
+  endpoint: "chat_completions",
+  model: "gpt-5.4-mini",
+  preset: "agentic",
+  intelligence: "high",
+  messages: [{ role: "user", content: "Solve this carefully." }],
+});
+```
+
+What they mean:
+
+- `preset`: chooses a higher-level runtime posture such as `fast`, `strict`, or `research`
+- `intelligence`: changes how heavy-handed the prompt guidance is
+- `minimal`: more explicit protocol guidance for weaker or less consistent models
+- `medium`: balanced default guidance
+- `high`: lighter protocol guidance for stronger models that do not need to be over-instructed
+
+Subagents can also override `preset` and `intelligence`.
+
+## Provider Pools And Queue
+
+General.AI beta can manage an OpenAI-compatible provider for you instead of requiring a prebuilt client.
+
+```ts
+const generalAI = new GeneralAI({
+  provider: {
+    name: "nvidia",
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    apiKeys: [
+      { key: process.env.NVIDIA_KEY_A!, label: "nvidia-a" },
+      { key: process.env.NVIDIA_KEY_B!, label: "nvidia-b" },
+      { key: process.env.NVIDIA_KEY_C!, label: "nvidia-c" },
+    ],
+    rotation: {
+      strategy: "round_robin",
+      onRateLimit: "next_key",
+      maxRateLimitHandoffs: 3,
+      revisitKeysInSameRequest: false,
+    },
+    queue: {
+      enabled: true,
+      maxConcurrentRequests: 3,
+      maxQueuedRequests: 100,
+      strategy: "fifo",
+    },
+  },
+});
+```
+
+Current beta behavior:
+
+- keys are selected in round-robin order
+- `429` triggers a handoff to the next unused key for that request
+- non-`429` provider failures are surfaced normally
+- requests beyond the provider concurrency limit wait in a provider-level FIFO queue
+- the same provider queue is shared by root agent calls, subagents, and provider-backed native calls
+
+This is a beta feature and has been validated most heavily on NVIDIA-compatible OpenAI-style endpoints so far.
 
 ## Tools
 
@@ -373,6 +567,8 @@ Subagents can override:
 
 - `endpoint`
 - `model`
+- `preset`
+- `intelligence`
 - `request`
 - `personality`
 - `safety`
@@ -427,6 +623,8 @@ safety: {
 
 Safety runs inside the agent protocol instead of forcing separate moderation-style API calls for every step.
 
+If `safety.enabled` is `false`, the safety prompt section and safety marker requirements are omitted from the assembled runtime prompt.
+
 ### Context Management
 
 ```ts
@@ -456,6 +654,16 @@ Supported modes:
 
 This is runtime-managed context control. It is not a built-in provider compression feature.
 
+### Completion Behavior
+
+`[[[status:done]]]` is still the preferred explicit finalizer, but it is no longer hard-required.
+
+If the model ends on a clearly complete final writing block, the runtime can infer completion and record that in:
+
+```ts
+result.meta.completion
+```
+
 ## Observability
 
 General.AI is designed to be inspectable.
@@ -465,10 +673,14 @@ You can already inspect:
 - parsed protocol events
 - warnings and retry reasons
 - cleaned output and raw protocol output
+- runtime configuration, including `preset`, `intelligence`, and resolved compatibility profile
+- completion mode, including whether `done` was explicit or inferred
 - tool and subagent counts
 - prompt rendering output
 - context compaction operations
 - endpoint result history
+- performance timing and speed metrics
+- provider-backed queueing and retry warnings
 
 This helps answer questions like:
 
@@ -605,7 +817,7 @@ GENERAL_AI_SKIP_LIVE=1
 
 If `GENERAL_AI_SKIP_LIVE=1` is set, the broader manual scripts skip live provider checks.
 
-## Beta Changelog
+## Beta Track Highlights
 
 Install the beta channel:
 
@@ -619,14 +831,25 @@ or:
 bun add @lightining/general.ai@beta openai
 ```
 
-Current beta highlights:
+This is a channel-level overview, not a historical beta.0-to-beta.1 changelog.
+
+Current beta-track highlights:
 
 - parallel tool and subagent action batching
+- runtime presets plus model-capacity-aware `intelligence` guidance
 - subagent-specific models and endpoint request parameters
 - thinking modes: `inline`, `orchestrated`, `hybrid`
 - structured `checkpoint` and `revise` support
 - context management with summarize / drop / hybrid strategies
+- provider-managed round-robin API key rotation
+- `429` handoff to the next key without revisiting exhausted keys in the same request
+- provider-level FIFO request queueing
+- disabled subsystems are omitted from the assembled runtime prompt instead of being described as "off"
+- soft-required `done` with inferred completion when the final writing block is clearly complete
+- built-in per-run speed metrics with heuristic speed indexing and stream TPS reporting
 - stronger streaming fallback and retry behavior
+- parser recovery for plain-text safety-style payload blocks
+- duplicate final-writing guards that stop obvious repeat loops earlier
 - compatibility profiles including `classic_v2`
 
 Features listed above are beta-track features. If you install `@lightining/general.ai` without `@beta`, you may be on an older stable release that does not include all of them yet.

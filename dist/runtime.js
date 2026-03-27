@@ -1,8 +1,8 @@
-import { DEFAULT_CONTEXT, DEFAULT_LIMITS, DEFAULT_PARALLEL, DEFAULT_SAFETY, DEFAULT_THINKING, } from "./defaults.js";
+import { DEFAULT_CONTEXT, DEFAULT_INTELLIGENCE, DEFAULT_LIMITS, DEFAULT_PARALLEL, DEFAULT_PRESET, DEFAULT_SAFETY, DEFAULT_THINKING, } from "./defaults.js";
 import { compileMessagesForChatCompletions, compileMessagesForResponses, extractChatTextDelta, extractTextFromChatCompletion, extractTextFromResponse, getReservedRequestKeys, resolveCompatibilityProfile, stripReservedRequestKeys, RESERVED_AGENT_CHAT_KEYS, RESERVED_AGENT_RESPONSE_KEYS, } from "./endpoint-adapters.js";
 import { renderPromptSections } from "./prompts.js";
-import { parseProtocol, ProtocolStreamParser, validateProtocolSequence } from "./protocol.js";
-import { aggregateUsage, buildMemorySnapshot, cloneMessage, countConversationTurns, estimateMessagesTokens, jsonStringify, mergeStringLists, omitUndefined, summarizeMessages, toTextContent, } from "./utils.js";
+import { inferImplicitDoneEvent, inferImplicitSafetyEvents, parseProtocol, ProtocolStreamParser, validateProtocolSequence, } from "./protocol.js";
+import { aggregateUsage, buildPerformanceSummary, buildMemorySnapshot, cloneMessage, countConversationTurns, estimateMessagesTokens, jsonStringify, mergeStringLists, omitUndefined, summarizeMessages, toTextContent, } from "./utils.js";
 function toRegistry(value) {
     if (!value) {
         return {};
@@ -58,32 +58,153 @@ function mergeNestedConfig(base, extra) {
         ...(extra ?? {}),
     };
 }
+function getPresetOverrides(preset) {
+    switch (preset) {
+        case "strict":
+            return {
+                safety: {
+                    enabled: true,
+                    mode: "strict",
+                },
+                thinking: {
+                    enabled: true,
+                    mode: "inline",
+                    strategy: "checkpointed",
+                    effort: "medium",
+                    checkpointFormat: "structured",
+                },
+            };
+        case "fast":
+            return {
+                thinking: {
+                    enabled: true,
+                    mode: "inline",
+                    strategy: "minimal",
+                    effort: "low",
+                    checkpoints: [
+                        "Before visible writing",
+                        "Before final completion",
+                    ],
+                },
+                context: {
+                    enabled: false,
+                    mode: "off",
+                },
+                limits: {
+                    maxSteps: 4,
+                    maxThinkingBlocks: 4,
+                },
+            };
+        case "agentic":
+            return {
+                thinking: {
+                    enabled: true,
+                    mode: "hybrid",
+                    strategy: "checkpointed",
+                    effort: "high",
+                },
+                parallel: {
+                    enabled: true,
+                    maxParallelActions: 6,
+                    maxParallelTools: 6,
+                    maxParallelSubagents: 3,
+                    maxCallsPerStep: 8,
+                },
+                limits: {
+                    maxSteps: 10,
+                    maxParallelActions: 6,
+                    maxParallelTools: 6,
+                    maxParallelSubagents: 3,
+                    maxCallsPerStep: 8,
+                },
+            };
+        case "classic_safe":
+            return {
+                compatibility: {
+                    profile: "classic_v2",
+                },
+                safety: {
+                    enabled: true,
+                    mode: "balanced",
+                },
+                thinking: {
+                    enabled: true,
+                    mode: "inline",
+                    strategy: "checkpointed",
+                    effort: "medium",
+                },
+            };
+        case "research":
+            return {
+                thinking: {
+                    enabled: true,
+                    mode: "hybrid",
+                    strategy: "checkpointed",
+                    effort: "high",
+                },
+                context: {
+                    enabled: true,
+                    mode: "hybrid",
+                    strategy: "summarize",
+                    keep: {
+                        recentMessages: 8,
+                        boundaryUserMessages: 2,
+                        boundaryAssistantMessages: 2,
+                    },
+                    summary: {
+                        profile: "comprehensive",
+                        maxItems: 12,
+                    },
+                },
+                limits: {
+                    maxSteps: 12,
+                    maxThinkingBlocks: 12,
+                    maxToolCalls: 8,
+                    maxSubagentCalls: 4,
+                },
+            };
+        case "balanced":
+        default:
+            return {};
+    }
+}
 function normalizeAgentParams(deps, params) {
     const defaults = deps.defaults?.agent;
+    const preset = params.preset ?? defaults?.preset ?? DEFAULT_PRESET;
+    const intelligence = params.intelligence ?? defaults?.intelligence ?? DEFAULT_INTELLIGENCE;
+    const presetOverrides = getPresetOverrides(preset);
     const safetyInput = {
         ...DEFAULT_SAFETY.input,
         ...defaults?.safety?.input,
+        ...presetOverrides.safety?.input,
         ...params.safety?.input,
     };
     const safetyOutput = {
         ...DEFAULT_SAFETY.output,
         ...defaults?.safety?.output,
+        ...presetOverrides.safety?.output,
         ...params.safety?.output,
     };
     const thinking = {
         ...DEFAULT_THINKING,
         ...defaults?.thinking,
+        ...presetOverrides.thinking,
         ...params.thinking,
-        checkpoints: params.thinking?.checkpoints ?? defaults?.thinking?.checkpoints ?? DEFAULT_THINKING.checkpoints,
+        checkpoints: params.thinking?.checkpoints ??
+            presetOverrides.thinking?.checkpoints ??
+            defaults?.thinking?.checkpoints ??
+            DEFAULT_THINKING.checkpoints,
     };
     const limits = {
         ...DEFAULT_LIMITS,
         ...defaults?.limits,
+        ...presetOverrides.limits,
         ...params.limits,
     };
     const parallel = {
         ...DEFAULT_PARALLEL,
         ...defaults?.parallel,
+        ...presetOverrides.parallel,
         ...params.parallel,
         maxParallelActions: params.parallel?.maxParallelActions ??
             defaults?.parallel?.maxParallelActions ??
@@ -101,6 +222,7 @@ function normalizeAgentParams(deps, params) {
     const context = {
         ...DEFAULT_CONTEXT,
         ...defaults?.context,
+        ...presetOverrides.context,
         ...params.context,
         trigger: mergeNestedConfig(mergeNestedConfig(DEFAULT_CONTEXT.trigger, defaults?.context?.trigger), params.context?.trigger),
         keep: mergeNestedConfig(mergeNestedConfig(DEFAULT_CONTEXT.keep, defaults?.context?.keep), params.context?.keep),
@@ -110,6 +232,7 @@ function normalizeAgentParams(deps, params) {
     const safety = {
         ...DEFAULT_SAFETY,
         ...defaults?.safety,
+        ...presetOverrides.safety,
         ...params.safety,
         input: safetyInput,
         output: safetyOutput,
@@ -128,6 +251,8 @@ function normalizeAgentParams(deps, params) {
     };
     return {
         ...params,
+        preset,
+        intelligence,
         debug: params.debug ?? defaults?.debug ?? deps.defaults?.debug ?? deps.debug,
         safety,
         thinking,
@@ -163,6 +288,11 @@ function normalizeAgentParams(deps, params) {
                 defaults?.personality?.instructions,
             prompt: params.personality?.prompt ?? defaults?.personality?.prompt,
         },
+        compatibility: {
+            ...defaults?.compatibility,
+            ...presetOverrides.compatibility,
+            ...params.compatibility,
+        },
     };
 }
 function renderConfigMap(title, value) {
@@ -173,28 +303,39 @@ function renderConfigMap(title, value) {
     return [`${title}:`, ...entries.map(([key, entry]) => `- ${key}: ${entry}`)].join("\n");
 }
 function renderToolsBlock(tools) {
-    if (!tools.enabled || Object.keys(tools.registry).length === 0) {
-        return "No General.AI protocol tools are configured for this run.";
+    if (!tools.enabled) {
+        return "";
     }
-    const lines = ["Available protocol tools:"];
-    for (const tool of Object.values(tools.registry)) {
-        lines.push(`- ${tool.name}: ${tool.description}`);
-        if (tool.inputSchema) {
-            lines.push(`  Input schema: ${jsonStringify(tool.inputSchema)}`);
+    const lines = [];
+    const toolsList = Object.values(tools.registry);
+    if (toolsList.length > 0) {
+        lines.push("Tools:");
+        lines.push("Available protocol tools:");
+        for (const tool of toolsList) {
+            lines.push(`- ${tool.name}: ${tool.description}`);
+            if (tool.inputSchema) {
+                lines.push(`  Input schema: ${jsonStringify(tool.inputSchema)}`);
+            }
+            if (tool.access) {
+                const subagentsAccess = tool.access.subagents === undefined
+                    ? "all configured subagents"
+                    : Array.isArray(tool.access.subagents)
+                        ? tool.access.subagents.join(", ")
+                        : tool.access.subagents
+                            ? "all configured subagents"
+                            : "disabled";
+                lines.push(`  Access: root=${String(tool.access.root ?? true)}, subagents=${subagentsAccess}`);
+            }
+            if (tool.metadata && Object.keys(tool.metadata).length > 0) {
+                lines.push(`  Metadata: ${jsonStringify(tool.metadata)}`);
+            }
         }
-        if (tool.access) {
-            const subagentsAccess = tool.access.subagents === undefined
-                ? "all configured subagents"
-                : Array.isArray(tool.access.subagents)
-                    ? tool.access.subagents.join(", ")
-                    : tool.access.subagents
-                        ? "all configured subagents"
-                        : "disabled";
-            lines.push(`  Access: root=${String(tool.access.root ?? true)}, subagents=${subagentsAccess}`);
+    }
+    if (tools.prompt?.trim()) {
+        if (lines.length > 0) {
+            lines.push("");
         }
-        if (tool.metadata && Object.keys(tool.metadata).length > 0) {
-            lines.push(`  Metadata: ${jsonStringify(tool.metadata)}`);
-        }
+        lines.push(tools.prompt.trim());
     }
     return lines.join("\n");
 }
@@ -227,18 +368,29 @@ function filterToolsForSubagent(tools, subagentName) {
     };
 }
 function renderSubagentsBlock(subagents) {
-    if (!subagents.enabled || Object.keys(subagents.registry).length === 0) {
-        return "No General.AI protocol subagents are configured for this run.";
+    if (!subagents.enabled) {
+        return "";
     }
-    const lines = ["Available protocol subagents:"];
-    for (const subagent of Object.values(subagents.registry)) {
-        lines.push(`- ${subagent.name}: ${subagent.description}`);
+    const lines = [];
+    const subagentsList = Object.values(subagents.registry);
+    if (subagentsList.length > 0) {
+        lines.push("Subagents:");
+        lines.push("Available protocol subagents:");
+        for (const subagent of subagentsList) {
+            lines.push(`- ${subagent.name}: ${subagent.description}`);
+        }
+    }
+    if (subagents.prompt?.trim()) {
+        if (lines.length > 0) {
+            lines.push("");
+        }
+        lines.push(subagents.prompt.trim());
     }
     return lines.join("\n");
 }
 function renderPersonalityBlock(params) {
     if (!params.personality?.enabled) {
-        return "No custom personality override is active. Stay direct, accurate, and adaptive.";
+        return "";
     }
     const sections = [
         params.personality.profile
@@ -253,9 +405,12 @@ function renderPersonalityBlock(params) {
             : "",
         params.personality.prompt ?? "",
     ].filter(Boolean);
-    return sections.join("\n\n");
+    return sections.join("\n\n").trim();
 }
 function renderSafetyBlock(params) {
+    if (!params.safety.enabled) {
+        return "";
+    }
     const blocks = [
         `Safety mode: ${params.safety.enabled ? params.safety.mode : "off"}`,
         `Input safety enabled: ${String(params.safety.input.enabled)}`,
@@ -271,6 +426,9 @@ function renderSafetyBlock(params) {
     return blocks.join("\n\n");
 }
 function renderThinkingBlock(params) {
+    if (!params.thinking.enabled) {
+        return "";
+    }
     const checkpoints = params.thinking.checkpoints.map((value) => `- ${value}`).join("\n");
     return [
         `Thinking enabled: ${String(params.thinking.enabled)}`,
@@ -284,22 +442,73 @@ function renderThinkingBlock(params) {
         .filter(Boolean)
         .join("\n\n");
 }
-function renderMemoryBlock(params, snapshot) {
-    if (!params.memory.enabled || !snapshot) {
-        return "No memory snapshot is currently loaded.";
+function renderProtocolSafetySingleLineMarkers(params) {
+    if (!params.safety.enabled) {
+        return "";
     }
     return [
-        snapshot.summary ? `Summary:\n${snapshot.summary}` : "",
-        snapshot.preferences?.length
-            ? `Preferences:\n${snapshot.preferences.map((value) => `- ${value}`).join("\n")}`
+        "- `[[[status:input_safety:{...}]]]`",
+        "- `[[[status:output_safety:{...}]]]`",
+    ].join("\n");
+}
+function renderProtocolSafetyBlockMarkers(params) {
+    if (!params.safety.enabled) {
+        return "";
+    }
+    return [
+        "- `[[[status:input_safety]]]` followed by a JSON object on the next lines",
+        "- `[[[status:output_safety]]]` followed by a JSON object on the next lines",
+    ].join("\n");
+}
+function renderProtocolTargetSequence(params) {
+    if (!params.thinking.enabled && !params.safety.enabled) {
+        return [
+            "1. Continue with `writing`, `checkpoint`, `revise`, `call_tool`, or `call_subagent` as needed.",
+            "2. Prefer `done` when the answer is fully complete.",
+        ].join("\n");
+    }
+    if (!params.thinking.enabled) {
+        return [
+            "1. Emit `input_safety`.",
+            "2. If the request is blocked, write a refusal and prefer `done` when the refusal is complete.",
+            "3. Otherwise continue with `writing`, `checkpoint`, `revise`, `call_tool`, or `call_subagent` as needed.",
+            "4. Emit exactly one final `output_safety` near the end unless an early hard refusal is required.",
+            "5. Prefer `done` when the answer is fully complete.",
+        ].join("\n");
+    }
+    if (!params.safety.enabled) {
+        return [
+            "1. Start with `thinking`.",
+            "2. Continue with `writing`, `checkpoint`, `revise`, `call_tool`, or `call_subagent` as needed.",
+            "3. Prefer `done` when the answer is fully complete.",
+        ].join("\n");
+    }
+    return [
+        "1. Start with `thinking`.",
+        "2. Emit `input_safety`.",
+        "3. If the request is blocked, write a refusal and prefer `done` when the refusal is complete.",
+        "4. Otherwise continue with `writing`, `checkpoint`, `revise`, `call_tool`, or `call_subagent` as needed.",
+        "5. Emit exactly one final `output_safety` near the end unless an early hard refusal is required.",
+        "6. Prefer `done` when the answer is fully complete.",
+    ].join("\n");
+}
+function renderMemoryBlock(params, snapshot) {
+    if (!params.memory.enabled) {
+        return "";
+    }
+    return [
+        snapshot?.summary ? `Summary:\n${snapshot.summary}` : "",
+        snapshot?.preferences?.length
+            ? `Preferences:\n${snapshot.preferences?.map((value) => `- ${value}`).join("\n")}`
             : "",
-        snapshot.notes?.length
-            ? `Notes:\n${snapshot.notes.map((value) => `- ${value}`).join("\n")}`
+        snapshot?.notes?.length
+            ? `Notes:\n${snapshot.notes?.map((value) => `- ${value}`).join("\n")}`
             : "",
         params.memory.prompt ?? "",
     ]
         .filter(Boolean)
-        .join("\n\n");
+        .join("\n\n")
+        .trim();
 }
 function renderTaskBlock(params) {
     const metadata = params.metadata && Object.keys(params.metadata).length > 0
@@ -311,12 +520,179 @@ function renderTaskBlock(params) {
         `Endpoint: ${params.endpoint}`,
         `Model: ${params.model}`,
         `Compatibility profile: ${resolveCompatibilityProfile(params.compatibility)}`,
-        `Parallel actions enabled: ${String(params.parallel.enabled)}`,
-        `Context management mode: ${params.context.enabled ? params.context.mode : "off"}`,
-        `Context strategy: ${params.context.strategy}`,
+        params.parallel.enabled ? `Parallel actions enabled: ${String(params.parallel.enabled)}` : "",
+        params.context.enabled && params.context.mode !== "off"
+            ? `Context management mode: ${params.context.mode}`
+            : "",
+        params.context.enabled && params.context.mode !== "off"
+            ? `Context strategy: ${params.context.strategy}`
+            : "",
         `Conversation preview:\n${summarizeMessages(params.messages)}`,
         `Run metadata:\n${metadata}`,
-    ].join("\n\n");
+    ]
+        .filter(Boolean)
+        .join("\n\n");
+}
+function renderIntelligenceIdentityGuidance(params) {
+    switch (params.intelligence) {
+        case "minimal":
+            return [
+                "Current model guidance level: minimal.",
+                "- Use the protocol conservatively and explicitly.",
+                "- Prefer cleaner marker discipline over clever shortcuts.",
+                "- When uncertain, choose the most parseable valid form.",
+            ].join("\n");
+        case "high":
+            return [
+                "Current model guidance level: high.",
+                "- Treat the protocol as a lightweight runtime contract.",
+                "- Do not over-explain your process unless the task truly benefits.",
+                "- Stay concise and capable rather than verbose.",
+            ].join("\n");
+        case "medium":
+        default:
+            return [
+                "Current model guidance level: medium.",
+                "- Follow the protocol carefully without over-explaining it.",
+            ].join("\n");
+    }
+}
+function renderIntelligenceProtocolGuidance(params) {
+    switch (params.intelligence) {
+        case "minimal":
+            return [
+                "Adaptive protocol guidance:",
+                "- Prefer one clear marker per line with no extra prose around it.",
+                "- Use canonical marker forms whenever possible.",
+                "- If you finish the answer, prefer emitting `done` explicitly.",
+            ].join("\n");
+        case "high":
+            return [
+                "Adaptive protocol guidance:",
+                "- Keep protocol usage tight and minimal.",
+                "- `done` is preferred when the answer is fully complete, but do not over-focus on ceremonial markers at the expense of a strong answer.",
+            ].join("\n");
+        case "medium":
+        default:
+            return [
+                "Adaptive protocol guidance:",
+                "- Prefer explicit `done` when the answer is complete.",
+            ].join("\n");
+    }
+}
+function renderIntelligenceThinkingGuidance(params) {
+    if (!params.thinking.enabled) {
+        return "";
+    }
+    switch (params.intelligence) {
+        case "minimal":
+            return [
+                "Adaptive thinking guidance:",
+                "- Keep each thinking block concrete and short.",
+                "- Use checkpoints to avoid losing state between steps.",
+            ].join("\n");
+        case "high":
+            return [
+                "Adaptive thinking guidance:",
+                "- Think only when it materially improves the answer.",
+                "- Avoid repetitive checkpointing or self-commentary.",
+            ].join("\n");
+        case "medium":
+        default:
+            return [
+                "Adaptive thinking guidance:",
+                "- Use thinking deliberately at real task transitions, not on every sentence.",
+            ].join("\n");
+    }
+}
+function renderIntelligenceToolsSubagentsGuidance(params) {
+    const hasTools = hasActiveToolsSection(params);
+    const hasSubagents = hasActiveSubagentsSection(params);
+    if (!hasTools && !hasSubagents) {
+        return "";
+    }
+    switch (params.intelligence) {
+        case "minimal":
+            return [
+                "Adaptive tool and subagent guidance:",
+                "- Only call listed tools or subagents.",
+                "- If multiple independent calls are required, batch them clearly.",
+                "- After results arrive, continue from those results instead of re-planning from scratch.",
+            ].join("\n");
+        case "high":
+            return [
+                "Adaptive tool and subagent guidance:",
+                "- Use tools or subagents when they genuinely improve quality, not automatically.",
+                "- Avoid redundant calls and move quickly once results are sufficient.",
+            ].join("\n");
+        case "medium":
+        default:
+            return [
+                "Adaptive tool and subagent guidance:",
+                "- Prefer the smallest number of calls that materially improves the answer.",
+            ].join("\n");
+    }
+}
+function renderIntelligenceTaskGuidance(params) {
+    return [
+        `Preset: ${params.preset}`,
+        `Intelligence guidance level: ${params.intelligence}`,
+    ].join("\n");
+}
+function hasActivePersonalityConfig(params) {
+    if (!params.personality?.enabled) {
+        return false;
+    }
+    return Boolean(params.personality.profile ||
+        Object.keys(params.personality.persona ?? {}).length > 0 ||
+        Object.keys(params.personality.style ?? {}).length > 0 ||
+        Object.keys(params.personality.behavior ?? {}).length > 0 ||
+        Object.keys(params.personality.boundaries ?? {}).length > 0 ||
+        params.personality.instructions?.trim() ||
+        params.personality.prompt?.trim());
+}
+function hasActiveThinkingConfig(params) {
+    return params.thinking.enabled;
+}
+function hasActiveToolsSection(params) {
+    return (params.tools.enabled &&
+        (Object.keys(params.tools.registry).length > 0 || Boolean(params.tools.prompt?.trim())));
+}
+function hasActiveSubagentsSection(params) {
+    return (params.subagents.enabled &&
+        (Object.keys(params.subagents.registry).length > 0 || Boolean(params.subagents.prompt?.trim())));
+}
+function hasActiveMemorySection(params, snapshot) {
+    return (params.memory.enabled &&
+        Boolean(snapshot?.summary ||
+            snapshot?.preferences?.length ||
+            snapshot?.notes?.length ||
+            params.memory.prompt?.trim()));
+}
+function renderToolsAndSubagentsSelectionRules(params) {
+    const hasTools = hasActiveToolsSection(params);
+    const hasSubagents = hasActiveSubagentsSection(params);
+    if (!hasTools && !hasSubagents) {
+        return "";
+    }
+    const lines = ["Selection rules:"];
+    if (hasTools) {
+        lines.push("- Use a tool when external execution or retrieval is clearly better than guessing.");
+    }
+    if (hasSubagents) {
+        lines.push("- Use a subagent when a specialized delegated pass is materially better than continuing alone.");
+    }
+    lines.push("- Do not call the same tool or subagent redundantly.");
+    lines.push("- If multiple independent tools or subagents are needed, batch them in one turn instead of scattering redundant follow-up calls.");
+    lines.push("- After receiving a tool or subagent result, reassess before continuing.");
+    if (hasSubagents) {
+        lines.push("- If no nested subagents are available inside a delegated subagent run, finish the task directly instead of trying to delegate again.");
+    }
+    if (hasTools && hasSubagents) {
+        lines.push("- If tools are available inside a subagent run, use only the tools allowed for that subagent.");
+    }
+    lines.push("- Never ask the user to manually add protocol reminders that the runtime already supplied.");
+    return lines.join("\n");
 }
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -360,6 +736,9 @@ function dedupeMessages(messages) {
         result.push(message);
     }
     return result;
+}
+function normalizeComparableText(text) {
+    return text.replace(/\s+/g, " ").trim();
 }
 function buildSummaryText(messages, params) {
     const profile = params.context.summary.profile ?? "balanced";
@@ -436,6 +815,9 @@ export class AgentRuntime {
     #contextOperations = [];
     #contextSummaryCount = 0;
     #contextDropCount = 0;
+    #runStartedAt = 0;
+    #stepTimings = [];
+    #writingFingerprints = [];
     constructor(deps, params, depth = 0) {
         this.deps = deps;
         this.depth = depth;
@@ -478,6 +860,7 @@ export class AgentRuntime {
         return true;
     }
     async run() {
+        this.#runStartedAt = performance.now();
         await this.#ensureMemory();
         const prompt = await this.#ensurePrompt();
         const strippedRequestKeys = getReservedRequestKeys(this.#params.endpoint, this.#params.request);
@@ -493,7 +876,7 @@ export class AgentRuntime {
                 }
                 throw new Error(parseFailure);
             }
-            this.#recordStep(stepResult.parsed, stepResult.rawOutput, stepResult.endpointResult);
+            const recordedStep = this.#recordStep(stepResult.parsed, stepResult.rawOutput, stepResult.endpointResult, stepResult.timing);
             if (stepResult.errorEvent?.kind === "error") {
                 const detail = jsonStringify(stepResult.errorEvent.payload);
                 if (this.#enqueueRetry("protocol_error_event", detail, stepResult.rawOutput)) {
@@ -514,6 +897,10 @@ export class AgentRuntime {
                 }
                 continue;
             }
+            if (this.#shouldStopAfterDuplicateWritingStep(stepResult.parsed, stepResult.actions, recordedStep)) {
+                this.#warnings.push("Stopping early after the model repeated the same completed writing without new actions.");
+                break;
+            }
             if (this.#shouldContinueThinkingPass(stepResult.parsed, stepResult.actions)) {
                 this.#enqueueThinkingContinuation(stepResult.rawOutput);
                 continue;
@@ -526,6 +913,7 @@ export class AgentRuntime {
         return await this.#finalize(prompt, strippedRequestKeys);
     }
     async *stream() {
+        this.#runStartedAt = performance.now();
         yield {
             type: "run_started",
             endpoint: this.#params.endpoint,
@@ -589,7 +977,7 @@ export class AgentRuntime {
                 }
                 throw new Error(parseFailure);
             }
-            this.#recordStep(stepResult.parsed, stepResult.rawOutput, stepResult.endpointResult);
+            const recordedStep = this.#recordStep(stepResult.parsed, stepResult.rawOutput, stepResult.endpointResult, stepResult.timing);
             for (const event of stepResult.parsed.events) {
                 yield {
                     type: "protocol_event",
@@ -666,6 +1054,15 @@ export class AgentRuntime {
                 }
                 continue;
             }
+            if (this.#shouldStopAfterDuplicateWritingStep(stepResult.parsed, stepResult.actions, recordedStep)) {
+                const message = "Stopping early after the model repeated the same completed writing without new actions.";
+                this.#warnings.push(message);
+                yield {
+                    type: "warning",
+                    message,
+                };
+                break;
+            }
             if (this.#shouldContinueThinkingPass(stepResult.parsed, stepResult.actions)) {
                 this.#enqueueThinkingContinuation(stepResult.rawOutput);
                 yield {
@@ -707,12 +1104,25 @@ export class AgentRuntime {
         const endpointSections = this.#params.endpoint === "responses"
             ? { endpoint_chat_completions: "" }
             : { endpoint_responses: "" };
+        const personalityEnabled = hasActivePersonalityConfig(this.#params);
+        const thinkingEnabled = hasActiveThinkingConfig(this.#params);
+        const toolsEnabled = hasActiveToolsSection(this.#params);
+        const subagentsEnabled = hasActiveSubagentsSection(this.#params);
+        const memoryEnabled = hasActiveMemorySection(this.#params, this.#memorySnapshot);
+        const disabledSections = {
+            ...(this.#params.safety.enabled ? {} : { safety: "" }),
+            ...(personalityEnabled ? {} : { personality: "" }),
+            ...(thinkingEnabled ? {} : { thinking: "" }),
+            ...(toolsEnabled || subagentsEnabled ? {} : { tools_subagents: "" }),
+            ...(memoryEnabled ? {} : { memory: "" }),
+        };
         this.#promptPromise ??= renderPromptSections({
             promptPack: this.deps.promptPack,
             runtimeOverrides: {
                 ...this.#params.prompts,
                 sections: {
                     ...endpointSections,
+                    ...disabledSections,
                     ...this.#params.prompts.sections,
                 },
             },
@@ -720,18 +1130,29 @@ export class AgentRuntime {
                 data: {
                     endpoint: this.#params.endpoint,
                     model: this.#params.model,
+                    preset: this.#params.preset,
+                    intelligence: this.#params.intelligence,
                     safety_mode: this.#params.safety.enabled ? this.#params.safety.mode : "off",
                     thinking_strategy: this.#params.thinking.strategy,
                     debug_enabled: this.#params.debug,
                 },
                 blocks: {
+                    intelligence_identity_guidance: renderIntelligenceIdentityGuidance(this.#params),
                     personality_config: renderPersonalityBlock(this.#params),
                     safety_config: renderSafetyBlock(this.#params),
+                    protocol_safety_single_line_markers: renderProtocolSafetySingleLineMarkers(this.#params),
+                    protocol_safety_block_markers: renderProtocolSafetyBlockMarkers(this.#params),
+                    protocol_target_sequence: renderProtocolTargetSequence(this.#params),
+                    intelligence_protocol_guidance: renderIntelligenceProtocolGuidance(this.#params),
                     thinking_config: renderThinkingBlock(this.#params),
-                    tools_registry: renderToolsBlock(this.#params.tools),
-                    subagents_registry: renderSubagentsBlock(this.#params.subagents),
+                    intelligence_thinking_guidance: renderIntelligenceThinkingGuidance(this.#params),
+                    tools_registry_section: renderToolsBlock(this.#params.tools),
+                    subagents_registry_section: renderSubagentsBlock(this.#params.subagents),
+                    tools_subagents_selection_rules: renderToolsAndSubagentsSelectionRules(this.#params),
+                    intelligence_tools_subagents_guidance: renderIntelligenceToolsSubagentsGuidance(this.#params),
                     memory_context: renderMemoryBlock(this.#params, this.#memorySnapshot),
                     task_context: renderTaskBlock(this.#params),
+                    intelligence_task_guidance: renderIntelligenceTaskGuidance(this.#params),
                 },
             },
         });
@@ -875,42 +1296,63 @@ export class AgentRuntime {
         };
     }
     async #runSingleStep() {
+        const startedAt = performance.now();
         if (this.#params.endpoint === "responses") {
             const body = this.#buildResponsesRequest(false);
             const result = await this.deps.openai.responses.create(body);
             const rawOutput = extractTextFromResponse(result);
             const parsed = this.#parseRawOutput(rawOutput);
+            const endedAt = performance.now();
             return {
                 rawOutput,
                 parsed,
                 actions: parsed.events.filter((event) => event.kind === "call_tool" || event.kind === "call_subagent"),
                 errorEvent: parsed.events.find((event) => event.kind === "error"),
                 endpointResult: result,
+                timing: {
+                    step: this.#step,
+                    stream: false,
+                    startedAt,
+                    endedAt,
+                },
             };
         }
         const body = this.#buildChatRequest(false);
         const result = await this.deps.openai.chat.completions.create(body);
         const rawOutput = extractTextFromChatCompletion(result);
         const parsed = this.#parseRawOutput(rawOutput);
+        const endedAt = performance.now();
         return {
             rawOutput,
             parsed,
             actions: parsed.events.filter((event) => event.kind === "call_tool" || event.kind === "call_subagent"),
             errorEvent: parsed.events.find((event) => event.kind === "error"),
             endpointResult: result,
+            timing: {
+                step: this.#step,
+                stream: false,
+                startedAt,
+                endedAt,
+            },
         };
     }
     async #runSingleStreamingStep() {
+        const startedAt = performance.now();
         const rawDeltas = [];
         const parser = new ProtocolStreamParser({ step: this.#step });
         let parserError;
+        let firstTextDeltaAt;
+        let lastTextDeltaAt;
         if (this.#params.endpoint === "responses") {
             const stream = this.deps.openai.responses.stream(this.#buildResponsesRequest(true));
             for await (const event of stream) {
                 if (event.type !== "response.output_text.delta") {
                     continue;
                 }
+                const deltaAt = performance.now();
                 rawDeltas.push(event.delta);
+                firstTextDeltaAt ??= deltaAt;
+                lastTextDeltaAt = deltaAt;
                 if (!parserError) {
                     try {
                         parser.push(event.delta);
@@ -921,6 +1363,7 @@ export class AgentRuntime {
                 }
             }
             const endpointResult = await stream.finalResponse();
+            const endedAt = performance.now();
             const rawOutput = rawDeltas.join("") || endpointResult.output_text;
             const parsed = parserError
                 ? (() => {
@@ -952,6 +1395,14 @@ export class AgentRuntime {
                 actions: parsed.events.filter((event) => event.kind === "call_tool" || event.kind === "call_subagent"),
                 errorEvent: parsed.events.find((event) => event.kind === "error"),
                 endpointResult,
+                timing: {
+                    step: this.#step,
+                    stream: true,
+                    startedAt,
+                    endedAt,
+                    firstTextDeltaAt,
+                    lastTextDeltaAt,
+                },
             };
         }
         const stream = this.deps.openai.chat.completions.stream(this.#buildChatRequest(true));
@@ -960,7 +1411,10 @@ export class AgentRuntime {
             if (!delta) {
                 continue;
             }
+            const deltaAt = performance.now();
             rawDeltas.push(delta);
+            firstTextDeltaAt ??= deltaAt;
+            lastTextDeltaAt = deltaAt;
             if (!parserError) {
                 try {
                     parser.push(delta);
@@ -971,6 +1425,7 @@ export class AgentRuntime {
             }
         }
         const endpointResult = stream.currentChatCompletionSnapshot;
+        const endedAt = performance.now();
         const rawOutput = rawDeltas.join("");
         const parsed = parserError
             ? (() => {
@@ -1002,6 +1457,14 @@ export class AgentRuntime {
             actions: parsed.events.filter((event) => event.kind === "call_tool" || event.kind === "call_subagent"),
             errorEvent: parsed.events.find((event) => event.kind === "error"),
             endpointResult,
+            timing: {
+                step: this.#step,
+                stream: true,
+                startedAt,
+                endedAt,
+                firstTextDeltaAt,
+                lastTextDeltaAt,
+            },
         };
     }
     #parseRawOutput(rawOutput) {
@@ -1030,15 +1493,16 @@ export class AgentRuntime {
             };
         }
     }
-    #recordStep(parsed, rawOutput, endpointResult) {
+    #recordStep(parsed, rawOutput, endpointResult, timing) {
         this.#rawOutputs.push(rawOutput);
         this.#endpointResults.push(endpointResult);
+        this.#stepTimings.push(timing);
         this.#warnings.push(...parsed.warnings);
-        this.#warnings.push(...validateProtocolSequence(parsed.events, this.#params.safety.enabled && this.#params.safety.mode !== "off"));
+        const stepWritingParts = [];
         for (const event of parsed.events) {
             this.#events.push(event);
             if (event.kind === "writing") {
-                this.#cleanedChunks.push(event.content);
+                stepWritingParts.push(event.content);
             }
             else if (event.kind === "thinking") {
                 const thinkingCount = this.#events.filter((entry) => entry.kind === "thinking").length;
@@ -1052,10 +1516,44 @@ export class AgentRuntime {
                 }
             }
         }
+        const writingText = stepWritingParts.join("");
+        const fingerprint = normalizeComparableText(writingText);
+        if (!fingerprint) {
+            return {
+                writingText,
+                duplicateWriting: false,
+                appendedWriting: false,
+            };
+        }
+        if (this.#writingFingerprints.at(-1) === fingerprint) {
+            this.#warnings.push("Duplicate writing content was ignored after the model repeated the same answer without new actions.");
+            return {
+                writingText,
+                duplicateWriting: true,
+                appendedWriting: false,
+            };
+        }
+        this.#cleanedChunks.push(writingText);
+        this.#writingFingerprints.push(fingerprint);
+        return {
+            writingText,
+            duplicateWriting: false,
+            appendedWriting: true,
+        };
+    }
+    #shouldStopAfterDuplicateWritingStep(parsed, actions, stepRecord) {
+        if (!stepRecord.duplicateWriting || actions.length > 0) {
+            return false;
+        }
+        const meaningfulKinds = parsed.events
+            .map((event) => event.kind)
+            .filter((kind) => kind !== "thinking" && kind !== "input_safety" && kind !== "output_safety");
+        return meaningfulKinds.every((kind) => kind === "writing" || kind === "done");
     }
     #shouldContinueThinkingPass(parsed, actions) {
-        if (this.#params.thinking.mode !== "orchestrated" &&
-            this.#params.thinking.mode !== "hybrid") {
+        if (!this.#params.thinking.enabled ||
+            (this.#params.thinking.mode !== "orchestrated" &&
+                this.#params.thinking.mode !== "hybrid")) {
             return false;
         }
         if (actions.length > 0) {
@@ -1148,6 +1646,8 @@ export class AgentRuntime {
         return await this.deps.runSubagent({
             endpoint: subagent.endpoint ?? this.#params.endpoint,
             model: subagent.model ?? this.#params.model,
+            preset: subagent.preset ?? this.#params.preset,
+            intelligence: subagent.intelligence ?? this.#params.intelligence,
             messages: [
                 {
                     role: "developer",
@@ -1294,8 +1794,24 @@ export class AgentRuntime {
         return orderedResults;
     }
     async #finalize(prompt, strippedRequestKeys) {
+        const safetyEnabled = this.#params.safety.enabled && this.#params.safety.mode !== "off";
+        const explicitDone = this.#events.some((event) => event.kind === "done");
+        const safetyNormalizedEvents = inferImplicitSafetyEvents(this.#events, safetyEnabled);
+        const { events: normalizedEvents, inferred: inferredDone } = inferImplicitDoneEvent(safetyNormalizedEvents);
+        const compatibilityProfile = resolveCompatibilityProfile(this.#params.compatibility);
+        const finalWarnings = mergeStringLists([
+            ...this.#warnings,
+            ...validateProtocolSequence(normalizedEvents, safetyEnabled, this.#params.thinking.enabled),
+        ]);
         const cleaned = this.#cleanedChunks.join("");
         const output = this.#rawOutputs.join("\n\n");
+        const usage = aggregateUsage(this.#endpointResults);
+        const performanceSummary = buildPerformanceSummary({
+            runStartedAt: this.#runStartedAt,
+            completedAt: performance.now(),
+            steps: this.#stepTimings,
+            endpointResults: this.#endpointResults,
+        });
         if (this.#params.memory.enabled && this.#params.memory.save && this.#params.memory.sessionId) {
             const snapshot = buildMemorySnapshot(this.#history, cleaned, this.#notes, this.#memorySnapshot);
             await this.#params.memory.adapter.save({
@@ -1307,11 +1823,22 @@ export class AgentRuntime {
         return {
             output,
             cleaned,
-            events: [...this.#events],
+            events: normalizedEvents,
             meta: {
-                warnings: mergeStringLists(this.#warnings),
+                warnings: finalWarnings,
                 prompt,
                 strippedRequestKeys,
+                configuration: {
+                    preset: this.#params.preset,
+                    intelligence: this.#params.intelligence,
+                    compatibilityProfile,
+                    safetyEnabled,
+                    thinkingEnabled: this.#params.thinking.enabled,
+                },
+                completion: {
+                    explicitDone,
+                    inferredDone,
+                },
                 stepCount: this.#step,
                 toolCallCount: this.#toolCallCount,
                 subagentCallCount: this.#subagentCallCount,
@@ -1320,9 +1847,10 @@ export class AgentRuntime {
                 contextSummaryCount: this.#contextSummaryCount,
                 contextDropCount: this.#contextDropCount,
                 memorySessionId: this.#params.memory.sessionId,
+                performance: performanceSummary,
                 endpointResults: [...this.#endpointResults],
             },
-            usage: aggregateUsage(this.#endpointResults),
+            usage,
             endpointResult: this.#endpointResults.at(-1),
         };
     }

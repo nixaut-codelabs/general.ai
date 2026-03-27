@@ -1,6 +1,9 @@
 Current task context:
 {block:task_context}
 
+Runtime profile:
+{block:intelligence_task_guidance}
+
 Run intent:
 - Satisfy the user's request directly.
 - Prefer concrete, correct output over decorative phrasing.

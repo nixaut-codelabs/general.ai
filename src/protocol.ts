@@ -61,6 +61,39 @@ function parseJsonPayload(payload: string, marker: string): Record<string, unkno
   }
 }
 
+function looksLikeStructuredJsonPayload(payload: string): boolean {
+  const trimmed = payload.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function parseJsonPayloadOrPlainObject(
+  payload: string,
+  marker: string,
+  warnings: string[],
+  fallbackKey: string,
+): Record<string, unknown> {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    return {};
+  }
+
+  try {
+    return parseJsonPayload(trimmed, marker);
+  } catch (error) {
+    if (looksLikeStructuredJsonPayload(trimmed)) {
+      throw error;
+    }
+
+    warnings.push(
+      `Recovered plain-text payload in protocol marker ${marker}.`,
+    );
+    return {
+      [fallbackKey]: trimmed,
+      recovered_plaintext: true,
+    };
+  }
+}
+
 function parseOptionalJsonPayload(
   payload: string,
   marker: string,
@@ -76,6 +109,7 @@ function parseOptionalJsonPayload(
 function parseMarker(
   inner: string,
   context: ParseContext,
+  warnings: string[],
   rawMarker = buildMarker(inner),
 ): GeneralAIProtocolEvent | OpenBlock {
 
@@ -100,7 +134,12 @@ function parseMarker(
   if (inner.startsWith("checkpoint:")) {
     const event: GeneralAICheckpointEvent = {
       kind: "checkpoint",
-      payload: parseJsonPayload(inner.slice("checkpoint:".length), rawMarker),
+      payload: parseJsonPayloadOrPlainObject(
+        inner.slice("checkpoint:".length),
+        rawMarker,
+        warnings,
+        "note",
+      ),
       step: context.step,
       rawMarker,
     };
@@ -120,7 +159,12 @@ function parseMarker(
   if (inner.startsWith("revise:")) {
     const event: GeneralAIReviseEvent = {
       kind: "revise",
-      payload: parseJsonPayload(inner.slice("revise:".length), rawMarker),
+      payload: parseJsonPayloadOrPlainObject(
+        inner.slice("revise:".length),
+        rawMarker,
+        warnings,
+        "note",
+      ),
       step: context.step,
       rawMarker,
     };
@@ -137,7 +181,12 @@ function parseMarker(
   }
 
   if (inner.startsWith("input_safety:")) {
-    const payload = parseJsonPayload(inner.slice("input_safety:".length), rawMarker);
+    const payload = parseJsonPayloadOrPlainObject(
+      inner.slice("input_safety:".length),
+      rawMarker,
+      warnings,
+      "reason",
+    );
     const event: GeneralAIInputSafetyEvent = {
       kind: "input_safety",
       payload,
@@ -155,7 +204,12 @@ function parseMarker(
   }
 
   if (inner.startsWith("output_safety:")) {
-    const payload = parseJsonPayload(inner.slice("output_safety:".length), rawMarker);
+    const payload = parseJsonPayloadOrPlainObject(
+      inner.slice("output_safety:".length),
+      rawMarker,
+      warnings,
+      "reason",
+    );
     const event: GeneralAIOutputSafetyEvent = {
       kind: "output_safety",
       payload,
@@ -173,7 +227,12 @@ function parseMarker(
   }
 
   if (inner.startsWith("error:")) {
-    const payload = parseJsonPayload(inner.slice("error:".length), rawMarker);
+    const payload = parseJsonPayloadOrPlainObject(
+      inner.slice("error:".length),
+      rawMarker,
+      warnings,
+      "message",
+    );
     const event: GeneralAIErrorEvent = {
       kind: "error",
       payload,
@@ -256,6 +315,7 @@ function flushBlock(
     | null,
   context: ParseContext,
   events: GeneralAIProtocolEvent[],
+  warnings: string[],
 ): void {
   if (!block) {
     return;
@@ -286,7 +346,7 @@ function flushBlock(
     block.type === "call_tool" ||
     block.type === "call_subagent"
   ) {
-    flushStructuredBlock(block, context, events);
+    flushStructuredBlock(block, context, events, warnings);
     return;
   }
 
@@ -315,11 +375,17 @@ function flushStructuredBlock(
       },
   context: ParseContext,
   events: GeneralAIProtocolEvent[],
+  warnings: string[],
 ): void {
   if (block.type === "input_safety") {
     events.push({
       kind: "input_safety",
-      payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+      payload: parseJsonPayloadOrPlainObject(
+        block.content,
+        block.rawMarker,
+        warnings,
+        "reason",
+      ),
       step: context.step,
       rawMarker: block.rawMarker,
     });
@@ -329,7 +395,12 @@ function flushStructuredBlock(
   if (block.type === "output_safety") {
     events.push({
       kind: "output_safety",
-      payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+      payload: parseJsonPayloadOrPlainObject(
+        block.content,
+        block.rawMarker,
+        warnings,
+        "reason",
+      ),
       step: context.step,
       rawMarker: block.rawMarker,
     });
@@ -339,7 +410,12 @@ function flushStructuredBlock(
   if (block.type === "error") {
     events.push({
       kind: "error",
-      payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+      payload: parseJsonPayloadOrPlainObject(
+        block.content,
+        block.rawMarker,
+        warnings,
+        "message",
+      ),
       step: context.step,
       rawMarker: block.rawMarker,
     });
@@ -434,12 +510,13 @@ export class ProtocolStreamParser {
         this.#buffer =
           newlineIndex === -1 ? "" : this.#buffer.slice(newlineIndex + 1);
         this.#seenMarker = true;
-        flushBlock(this.#activeBlock, this.context, this.#events);
+        flushBlock(this.#activeBlock, this.context, this.#events, this.#warnings);
         this.#activeBlock = null;
 
         const parsed = parseMarker(
           marker.slice(MARKER_PREFIX.length, -suffix.length),
           this.context,
+          this.#warnings,
           marker,
         );
 
@@ -512,7 +589,7 @@ export class ProtocolStreamParser {
     }
 
     if (flushPartial) {
-      flushBlock(this.#activeBlock, this.context, this.#events);
+      flushBlock(this.#activeBlock, this.context, this.#events, this.#warnings);
       this.#activeBlock = null;
     }
   }
@@ -546,6 +623,7 @@ export function parseProtocol(
 export function validateProtocolSequence(
   events: GeneralAIProtocolEvent[],
   safetyEnabled: boolean,
+  thinkingEnabled = true,
 ): string[] {
   const warnings: string[] = [];
   const kinds = events.map((event) => event.kind);
@@ -555,7 +633,7 @@ export function validateProtocolSequence(
     return warnings;
   }
 
-  if (events[0]?.kind !== "thinking") {
+  if (thinkingEnabled && events[0]?.kind !== "thinking") {
     warnings.push("Protocol sequence does not begin with a thinking block.");
   }
 
@@ -578,4 +656,88 @@ export function validateProtocolSequence(
   }
 
   return warnings;
+}
+
+export function inferImplicitSafetyEvents(
+  events: GeneralAIProtocolEvent[],
+  safetyEnabled: boolean,
+): GeneralAIProtocolEvent[] {
+  if (!safetyEnabled || events.length === 0) {
+    return [...events];
+  }
+
+  const nextEvents = [...events];
+  const hasInputSafety = nextEvents.some((event) => event.kind === "input_safety");
+  const hasOutputSafety = nextEvents.some((event) => event.kind === "output_safety");
+
+  if (!hasInputSafety) {
+    const insertAt = nextEvents.findIndex((event) => event.kind !== "thinking");
+    const inferredInput: GeneralAIInputSafetyEvent = {
+      kind: "input_safety",
+      payload: {
+        safe: true,
+        inferred: true,
+        action: "allow",
+        reason: "No explicit input_safety block was emitted by the model.",
+      },
+      step: nextEvents[0]?.step ?? 1,
+    };
+    nextEvents.splice(insertAt === -1 ? nextEvents.length : insertAt, 0, inferredInput);
+  }
+
+  if (!hasOutputSafety) {
+    const doneIndex = nextEvents.findIndex((event) => event.kind === "done");
+    const anchorIndex = doneIndex === -1 ? nextEvents.length : doneIndex;
+    const anchorStep =
+      (doneIndex === -1 ? nextEvents.at(-1)?.step : nextEvents[doneIndex]?.step) ?? 1;
+    const inferredOutput: GeneralAIOutputSafetyEvent = {
+      kind: "output_safety",
+      payload: {
+        safe: true,
+        inferred: true,
+        action: "allow",
+        reason: "No explicit output_safety block was emitted by the model.",
+      },
+      step: anchorStep,
+    };
+    nextEvents.splice(anchorIndex, 0, inferredOutput);
+  }
+
+  return nextEvents;
+}
+
+function canInferDoneFromEvents(events: GeneralAIProtocolEvent[]): boolean {
+  if (events.length === 0 || events.some((event) => event.kind === "done" || event.kind === "error")) {
+    return false;
+  }
+
+  const kinds = events.map((event) => event.kind);
+  if (!kinds.includes("writing")) {
+    return false;
+  }
+
+  const lastKind = events.at(-1)?.kind;
+  return lastKind === "writing" || lastKind === "output_safety";
+}
+
+export function inferImplicitDoneEvent(
+  events: GeneralAIProtocolEvent[],
+): { events: GeneralAIProtocolEvent[]; inferred: boolean } {
+  if (!canInferDoneFromEvents(events)) {
+    return {
+      events: [...events],
+      inferred: false,
+    };
+  }
+
+  const finalStep = events.at(-1)?.step ?? 1;
+  const inferredDone: GeneralAIDoneEvent = {
+    kind: "done",
+    step: finalStep,
+  };
+
+  return {
+    events: [...events, inferredDone],
+    inferred: true,
+  };
 }

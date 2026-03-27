@@ -1,7 +1,6 @@
-import type OpenAI from "openai";
-import type { GeneralAIAgentParams, GeneralAIAgentResult, GeneralAIAgentStreamEvent, GeneralAILibraryDefaults, GeneralAIMemoryAdapter, GeneralAIPromptPack } from "./types.js";
+import type { GeneralAIAgentParams, GeneralAIAgentResult, GeneralAIAgentStreamEvent, GeneralAILibraryDefaults, GeneralAIMemoryAdapter, GeneralAIPromptPack, GeneralAIProviderClientLike } from "./types.js";
 interface AgentRuntimeDependencies {
-    openai: OpenAI;
+    openai: GeneralAIProviderClientLike;
     defaults?: GeneralAILibraryDefaults;
     promptPack?: GeneralAIPromptPack;
     memoryAdapter: GeneralAIMemoryAdapter;

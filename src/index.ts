@@ -16,6 +16,7 @@ export {
   extractTextFromResponse,
 } from "./endpoint-adapters.js";
 export {
+  createCalculatorTool,
   createOpenAIWebSearchTool,
   defineSubagent,
   defineTool,

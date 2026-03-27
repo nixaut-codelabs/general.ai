@@ -5,10 +5,11 @@ import type {
   GeneralAINativeSurface,
 } from "./types.js";
 import { InMemoryMemoryAdapter } from "./memory.js";
+import { ProviderRuntime } from "./provider-runtime.js";
 import { AgentRuntime } from "./runtime.js";
 
 export class GeneralAI {
-  readonly openai: GeneralAIConstructorOptions["openai"];
+  readonly openai: NonNullable<GeneralAIConstructorOptions["openai"]> | GeneralAINativeSurface["openai"];
   readonly native: GeneralAINativeSurface;
   readonly agent: {
     generate: (params: GeneralAIAgentParams) => Promise<GeneralAIAgentResult>;
@@ -27,19 +28,27 @@ export class GeneralAI {
   #memoryAdapter;
   #promptPack;
   #debug;
+  #providerRuntime;
 
   constructor(options: GeneralAIConstructorOptions) {
-    if (!options?.openai) {
-      throw new Error("GeneralAI requires an injected OpenAI client instance.");
+    if (!options?.openai && !options?.provider) {
+      throw new Error("GeneralAI requires either an injected OpenAI client instance or a provider config.");
     }
 
-    this.openai = options.openai;
+    if (options?.openai && options?.provider) {
+      throw new Error("GeneralAI constructor accepts either openai or provider, not both.");
+    }
+
+    this.#providerRuntime = options.provider
+      ? new ProviderRuntime(options.provider, options.openaiFactory)
+      : undefined;
+    this.openai = (options.openai ?? this.#providerRuntime?.nativeSurface.openai)!;
     this.#defaults = options.defaults;
     this.#memoryAdapter = options.memoryAdapter ?? new InMemoryMemoryAdapter();
     this.#promptPack = options.promptPack;
     this.#debug = options.debug ?? false;
 
-    this.native = {
+    this.native = this.#providerRuntime?.nativeSurface ?? {
       openai: this.openai,
       responses: this.openai.responses,
       chat: this.openai.chat,
@@ -71,7 +80,7 @@ export class GeneralAI {
   #createRuntime(params: GeneralAIAgentParams, depth: number) {
     return new AgentRuntime(
       {
-        openai: this.openai,
+        openai: this.native.openai,
         defaults: this.#defaults,
         promptPack: this.#promptPack,
         memoryAdapter: this.#memoryAdapter,

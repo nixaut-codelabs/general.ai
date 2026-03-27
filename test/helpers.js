@@ -131,3 +131,30 @@ export function createFakeOpenAI(options = {}) {
     },
   };
 }
+
+export function createFakeOpenAIFactory(factoryOptions = {}) {
+  const created = [];
+  const createClient =
+    factoryOptions.createClient ??
+    ((context) =>
+      createFakeOpenAI({
+        responseOutputs: factoryOptions.responseOutputs?.[context.apiKey] ?? [],
+        chatOutputs: factoryOptions.chatOutputs?.[context.apiKey] ?? [],
+      }));
+
+  return {
+    created,
+    factory(options) {
+      const context = {
+        ...options,
+        instanceIndex: created.length,
+      };
+      const client = createClient(context);
+      created.push({
+        context,
+        client,
+      });
+      return client;
+    },
+  };
+}

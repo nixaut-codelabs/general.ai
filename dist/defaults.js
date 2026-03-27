@@ -23,6 +23,8 @@ export const PROMPT_SECTION_TITLES = {
     task: "Task Context",
 };
 export const DEFAULT_PROMPT_OVERRIDES = {};
+export const DEFAULT_PRESET = "balanced";
+export const DEFAULT_INTELLIGENCE = "medium";
 export const DEFAULT_SAFETY = {
     enabled: true,
     mode: "balanced",
@@ -103,4 +105,12 @@ export const DEFAULT_CONTEXT = {
     },
     prompt: "",
 };
+export const PRESET_NAMES = [
+    "balanced",
+    "strict",
+    "fast",
+    "agentic",
+    "classic_safe",
+    "research",
+];
 //# sourceMappingURL=defaults.js.map

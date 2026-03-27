@@ -244,7 +244,7 @@ export interface GeneralAIContextConfig {
 }
 
 export interface GeneralAIToolExecutionContext {
-  openai: OpenAI;
+  openai: GeneralAIProviderClientLike;
   endpoint: GeneralAIEndpoint;
   model: string;
   step: number;
@@ -287,6 +287,8 @@ export interface GeneralAISubagentDefinition {
   instructions: string;
   endpoint?: GeneralAIEndpoint;
   model?: string;
+  preset?: GeneralAIPreset;
+  intelligence?: GeneralAIIntelligenceLevel;
   personality?: GeneralAIPersonalityConfig;
   safety?: GeneralAISafetyConfig;
   thinking?: GeneralAIThinkingConfig;
@@ -301,7 +303,7 @@ export interface GeneralAISubagentDefinition {
 }
 
 export interface GeneralAISubagentInvocationContext {
-  openai: OpenAI;
+  openai: GeneralAIProviderClientLike;
   parentParams: GeneralAIAgentParams;
   step: number;
   sessionId?: string;
@@ -320,6 +322,36 @@ export interface GeneralAIRequestOverrides {
   chat_completions?: Partial<ChatCompletionCreateParams>;
 }
 
+export interface GeneralAIProviderApiKey {
+  key: string;
+  label?: string;
+}
+
+export interface GeneralAIProviderRotationConfig {
+  strategy?: "round_robin";
+  onRateLimit?: "next_key";
+  maxRateLimitHandoffs?: number;
+  revisitKeysInSameRequest?: boolean;
+}
+
+export interface GeneralAIProviderQueueConfig {
+  enabled?: boolean;
+  maxConcurrentRequests?: number;
+  maxQueuedRequests?: number;
+  strategy?: "fifo";
+}
+
+export interface GeneralAIProviderConfig {
+  name?: string;
+  baseURL: string;
+  apiKeys: Array<string | GeneralAIProviderApiKey>;
+  defaultHeaders?: Record<string, string>;
+  defaultQuery?: Record<string, string>;
+  timeout?: number;
+  rotation?: GeneralAIProviderRotationConfig;
+  queue?: GeneralAIProviderQueueConfig;
+}
+
 export type GeneralAICompatibilityProfile =
   | "auto"
   | "modern"
@@ -331,10 +363,22 @@ export interface GeneralAICompatibilityConfig {
   chatRoleMode?: "modern" | "classic";
 }
 
+export type GeneralAIIntelligenceLevel = "minimal" | "medium" | "high";
+
+export type GeneralAIPreset =
+  | "balanced"
+  | "strict"
+  | "fast"
+  | "agentic"
+  | "classic_safe"
+  | "research";
+
 export interface GeneralAIAgentParams {
   endpoint: GeneralAIEndpoint;
   model: string;
   messages: GeneralAIMessage[];
+  preset?: GeneralAIPreset;
+  intelligence?: GeneralAIIntelligenceLevel;
   personality?: GeneralAIPersonalityConfig;
   safety?: GeneralAISafetyConfig;
   thinking?: GeneralAIThinkingConfig;
@@ -368,6 +412,45 @@ export interface GeneralAIUsageSummary {
   totalTokens: number;
   cachedInputTokens: number;
   reasoningTokens: number;
+}
+
+export type GeneralAISpeedMode = "heuristic_speed_index" | "stream_tps";
+export type GeneralAISpeedUnit = "speed_index" | "tokens_per_second";
+export type GeneralAISpeedLabel =
+  | "very_slow"
+  | "slow"
+  | "steady"
+  | "fast"
+  | "very_fast";
+
+export interface GeneralAISpeedMeasurement {
+  mode: GeneralAISpeedMode;
+  unit: GeneralAISpeedUnit;
+  value: number;
+  label: GeneralAISpeedLabel;
+  algorithm: string;
+}
+
+export interface GeneralAIStepPerformance {
+  step: number;
+  stream: boolean;
+  durationMs: number;
+  firstTokenLatencyMs?: number;
+  outputWindowMs?: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  speed: GeneralAISpeedMeasurement;
+}
+
+export interface GeneralAIPerformanceSummary {
+  wallTimeMs: number;
+  requestTimeMs: number;
+  timeToFirstTokenMs?: number;
+  speed: GeneralAISpeedMeasurement;
+  steps: GeneralAIStepPerformance[];
 }
 
 export interface GeneralAIProtocolEventBase {
@@ -455,6 +538,17 @@ export interface GeneralAIAgentMeta {
   warnings: string[];
   prompt: GeneralAIRenderedPrompts;
   strippedRequestKeys: string[];
+  configuration: {
+    preset: GeneralAIPreset;
+    intelligence: GeneralAIIntelligenceLevel;
+    compatibilityProfile: GeneralAICompatibilityProfile;
+    safetyEnabled: boolean;
+    thinkingEnabled: boolean;
+  };
+  completion: {
+    explicitDone: boolean;
+    inferredDone: boolean;
+  };
   stepCount: number;
   toolCallCount: number;
   subagentCallCount: number;
@@ -463,6 +557,7 @@ export interface GeneralAIAgentMeta {
   contextSummaryCount: number;
   contextDropCount: number;
   memorySessionId?: string;
+  performance: GeneralAIPerformanceSummary;
   endpointResults: unknown[];
 }
 
@@ -564,14 +659,47 @@ export interface GeneralAILibraryDefaults {
   >;
 }
 
+export interface GeneralAIProviderClientLike {
+  responses: {
+    create(body: any): Promise<Response>;
+    stream(body: any): any;
+  };
+  chat: {
+    completions: {
+      create(body: any): Promise<ChatCompletion>;
+      stream(body: any): any;
+    };
+  };
+}
+
+export interface GeneralAINativeResponsesSurface {
+  create(body: any): Promise<Response>;
+  stream(body: any): any;
+}
+
+export interface GeneralAINativeChatCompletionsSurface {
+  create(body: any): Promise<ChatCompletion>;
+  stream(body: any): any;
+}
+
 export interface GeneralAINativeSurface {
-  openai: OpenAI;
-  responses: OpenAI["responses"];
-  chat: OpenAI["chat"];
+  openai: GeneralAIProviderClientLike | OpenAI;
+  responses: GeneralAINativeResponsesSurface;
+  chat: {
+    completions: GeneralAINativeChatCompletionsSurface;
+  };
 }
 
 export interface GeneralAIConstructorOptions {
-  openai: OpenAI;
+  openai?: OpenAI;
+  provider?: GeneralAIProviderConfig;
+  openaiFactory?: (options: {
+    apiKey: string;
+    baseURL: string;
+    defaultHeaders?: Record<string, string>;
+    defaultQuery?: Record<string, string>;
+    timeout?: number;
+  }) => GeneralAIProviderClientLike;
   defaults?: GeneralAILibraryDefaults;
   memoryAdapter?: GeneralAIMemoryAdapter;
   promptPack?: GeneralAIPromptPack;

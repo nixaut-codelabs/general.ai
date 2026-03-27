@@ -1,6 +1,6 @@
-import type OpenAI from "openai";
 import type { ResponseCreateParams, WebSearchTool } from "openai/resources/responses/responses";
 import type {
+  GeneralAIProviderClientLike,
   GeneralAIToolDefinition,
   GeneralAISubagentDefinition,
 } from "./types.js";
@@ -18,7 +18,7 @@ export function defineSubagent(
 }
 
 export interface OpenAIWebSearchToolOptions {
-  openai: OpenAI;
+  openai: GeneralAIProviderClientLike;
   name?: string;
   model?: string;
   description?: string;
@@ -26,6 +26,23 @@ export interface OpenAIWebSearchToolOptions {
   user_location?: WebSearchTool["user_location"];
   filters?: WebSearchTool["filters"];
   request?: Partial<ResponseCreateParams>;
+}
+
+export interface CalculatorToolOptions {
+  name?: string;
+  description?: string;
+}
+
+export type CalculatorOperation =
+  | "add"
+  | "subtract"
+  | "multiply"
+  | "divide";
+
+export interface CalculatorToolArgs {
+  left: number;
+  right: number;
+  operation: CalculatorOperation;
 }
 
 export function createOpenAIWebSearchTool(
@@ -74,6 +91,70 @@ export function createOpenAIWebSearchTool(
       return {
         answer: (response as any).output_text ?? "",
         response,
+      };
+    },
+  });
+}
+
+export function createCalculatorTool(
+  options: CalculatorToolOptions = {},
+): GeneralAIToolDefinition<
+  CalculatorToolArgs,
+  { operation: CalculatorOperation; left: number; right: number; result: number }
+> {
+  return defineTool({
+    name: options.name ?? "calculator",
+    description:
+      options.description ??
+      "Perform basic arithmetic on two numbers: add, subtract, multiply, or divide.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        left: {
+          type: "number",
+          description: "The left-hand numeric operand.",
+        },
+        right: {
+          type: "number",
+          description: "The right-hand numeric operand.",
+        },
+        operation: {
+          type: "string",
+          enum: ["add", "subtract", "multiply", "divide"],
+          description: "The arithmetic operation to perform.",
+        },
+      },
+      required: ["left", "right", "operation"],
+    },
+    async execute(args) {
+      let result: number;
+
+      switch (args.operation) {
+        case "add":
+          result = args.left + args.right;
+          break;
+        case "subtract":
+          result = args.left - args.right;
+          break;
+        case "multiply":
+          result = args.left * args.right;
+          break;
+        case "divide":
+          if (args.right === 0) {
+            throw new Error("Calculator tool cannot divide by zero.");
+          }
+          result = args.left / args.right;
+          break;
+        default:
+          throw new Error(`Unsupported calculator operation '${String(args.operation)}'.`);
+      }
+
+      return {
+        operation: args.operation,
+        left: args.left,
+        right: args.right,
+        result,
       };
     },
   });

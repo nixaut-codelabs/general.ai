@@ -1,7 +1,7 @@
 import type { GeneralAIAgentParams, GeneralAIAgentResult, GeneralAIConstructorOptions, GeneralAINativeSurface } from "./types.js";
 export declare class GeneralAI {
     #private;
-    readonly openai: GeneralAIConstructorOptions["openai"];
+    readonly openai: NonNullable<GeneralAIConstructorOptions["openai"]> | GeneralAINativeSurface["openai"];
     readonly native: GeneralAINativeSurface;
     readonly agent: {
         generate: (params: GeneralAIAgentParams) => Promise<GeneralAIAgentResult>;

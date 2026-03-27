@@ -21,6 +21,29 @@ function parseJsonPayload(payload, marker) {
         throw new Error(`Invalid JSON payload in protocol marker ${marker}: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+function looksLikeStructuredJsonPayload(payload) {
+    const trimmed = payload.trim();
+    return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+function parseJsonPayloadOrPlainObject(payload, marker, warnings, fallbackKey) {
+    const trimmed = payload.trim();
+    if (!trimmed) {
+        return {};
+    }
+    try {
+        return parseJsonPayload(trimmed, marker);
+    }
+    catch (error) {
+        if (looksLikeStructuredJsonPayload(trimmed)) {
+            throw error;
+        }
+        warnings.push(`Recovered plain-text payload in protocol marker ${marker}.`);
+        return {
+            [fallbackKey]: trimmed,
+            recovered_plaintext: true,
+        };
+    }
+}
 function parseOptionalJsonPayload(payload, marker) {
     const trimmed = payload.trim();
     if (!trimmed) {
@@ -28,7 +51,7 @@ function parseOptionalJsonPayload(payload, marker) {
     }
     return parseJsonPayload(trimmed, marker);
 }
-function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
+function parseMarker(inner, context, warnings, rawMarker = buildMarker(inner)) {
     if (inner === "writing") {
         return { openBlock: "writing", rawMarker };
     }
@@ -47,7 +70,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
     if (inner.startsWith("checkpoint:")) {
         const event = {
             kind: "checkpoint",
-            payload: parseJsonPayload(inner.slice("checkpoint:".length), rawMarker),
+            payload: parseJsonPayloadOrPlainObject(inner.slice("checkpoint:".length), rawMarker, warnings, "note"),
             step: context.step,
             rawMarker,
         };
@@ -65,7 +88,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
     if (inner.startsWith("revise:")) {
         const event = {
             kind: "revise",
-            payload: parseJsonPayload(inner.slice("revise:".length), rawMarker),
+            payload: parseJsonPayloadOrPlainObject(inner.slice("revise:".length), rawMarker, warnings, "note"),
             step: context.step,
             rawMarker,
         };
@@ -80,7 +103,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
         return event;
     }
     if (inner.startsWith("input_safety:")) {
-        const payload = parseJsonPayload(inner.slice("input_safety:".length), rawMarker);
+        const payload = parseJsonPayloadOrPlainObject(inner.slice("input_safety:".length), rawMarker, warnings, "reason");
         const event = {
             kind: "input_safety",
             payload,
@@ -96,7 +119,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
         };
     }
     if (inner.startsWith("output_safety:")) {
-        const payload = parseJsonPayload(inner.slice("output_safety:".length), rawMarker);
+        const payload = parseJsonPayloadOrPlainObject(inner.slice("output_safety:".length), rawMarker, warnings, "reason");
         const event = {
             kind: "output_safety",
             payload,
@@ -112,7 +135,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
         };
     }
     if (inner.startsWith("error:")) {
-        const payload = parseJsonPayload(inner.slice("error:".length), rawMarker);
+        const payload = parseJsonPayloadOrPlainObject(inner.slice("error:".length), rawMarker, warnings, "message");
         const event = {
             kind: "error",
             payload,
@@ -171,7 +194,7 @@ function parseMarker(inner, context, rawMarker = buildMarker(inner)) {
     }
     throw new Error(`Unknown protocol marker: ${rawMarker}`);
 }
-function flushBlock(block, context, events) {
+function flushBlock(block, context, events, warnings) {
     if (!block) {
         return;
     }
@@ -194,7 +217,7 @@ function flushBlock(block, context, events) {
         block.type === "error" ||
         block.type === "call_tool" ||
         block.type === "call_subagent") {
-        flushStructuredBlock(block, context, events);
+        flushStructuredBlock(block, context, events, warnings);
         return;
     }
     const event = {
@@ -206,11 +229,11 @@ function flushBlock(block, context, events) {
     events.push(event);
     return;
 }
-function flushStructuredBlock(block, context, events) {
+function flushStructuredBlock(block, context, events, warnings) {
     if (block.type === "input_safety") {
         events.push({
             kind: "input_safety",
-            payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+            payload: parseJsonPayloadOrPlainObject(block.content, block.rawMarker, warnings, "reason"),
             step: context.step,
             rawMarker: block.rawMarker,
         });
@@ -219,7 +242,7 @@ function flushStructuredBlock(block, context, events) {
     if (block.type === "output_safety") {
         events.push({
             kind: "output_safety",
-            payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+            payload: parseJsonPayloadOrPlainObject(block.content, block.rawMarker, warnings, "reason"),
             step: context.step,
             rawMarker: block.rawMarker,
         });
@@ -228,7 +251,7 @@ function flushStructuredBlock(block, context, events) {
     if (block.type === "error") {
         events.push({
             kind: "error",
-            payload: parseOptionalJsonPayload(block.content, block.rawMarker),
+            payload: parseJsonPayloadOrPlainObject(block.content, block.rawMarker, warnings, "message"),
             step: context.step,
             rawMarker: block.rawMarker,
         });
@@ -301,9 +324,9 @@ export class ProtocolStreamParser {
                 this.#buffer =
                     newlineIndex === -1 ? "" : this.#buffer.slice(newlineIndex + 1);
                 this.#seenMarker = true;
-                flushBlock(this.#activeBlock, this.context, this.#events);
+                flushBlock(this.#activeBlock, this.context, this.#events, this.#warnings);
                 this.#activeBlock = null;
-                const parsed = parseMarker(marker.slice(MARKER_PREFIX.length, -suffix.length), this.context, marker);
+                const parsed = parseMarker(marker.slice(MARKER_PREFIX.length, -suffix.length), this.context, this.#warnings, marker);
                 if ("openBlock" in parsed) {
                     this.#activeBlock =
                         "name" in parsed
@@ -361,7 +384,7 @@ export class ProtocolStreamParser {
             break;
         }
         if (flushPartial) {
-            flushBlock(this.#activeBlock, this.context, this.#events);
+            flushBlock(this.#activeBlock, this.context, this.#events, this.#warnings);
             this.#activeBlock = null;
         }
     }
@@ -384,14 +407,14 @@ export function parseProtocol(text, context = { step: 1 }) {
     parser.push(text);
     return parser.end();
 }
-export function validateProtocolSequence(events, safetyEnabled) {
+export function validateProtocolSequence(events, safetyEnabled, thinkingEnabled = true) {
     const warnings = [];
     const kinds = events.map((event) => event.kind);
     if (events.length === 0) {
         warnings.push("No protocol events were produced.");
         return warnings;
     }
-    if (events[0]?.kind !== "thinking") {
+    if (thinkingEnabled && events[0]?.kind !== "thinking") {
         warnings.push("Protocol sequence does not begin with a thinking block.");
     }
     if (safetyEnabled && !kinds.includes("input_safety")) {
@@ -409,5 +432,72 @@ export function validateProtocolSequence(events, safetyEnabled) {
         warnings.push("output_safety appears after done.");
     }
     return warnings;
+}
+export function inferImplicitSafetyEvents(events, safetyEnabled) {
+    if (!safetyEnabled || events.length === 0) {
+        return [...events];
+    }
+    const nextEvents = [...events];
+    const hasInputSafety = nextEvents.some((event) => event.kind === "input_safety");
+    const hasOutputSafety = nextEvents.some((event) => event.kind === "output_safety");
+    if (!hasInputSafety) {
+        const insertAt = nextEvents.findIndex((event) => event.kind !== "thinking");
+        const inferredInput = {
+            kind: "input_safety",
+            payload: {
+                safe: true,
+                inferred: true,
+                action: "allow",
+                reason: "No explicit input_safety block was emitted by the model.",
+            },
+            step: nextEvents[0]?.step ?? 1,
+        };
+        nextEvents.splice(insertAt === -1 ? nextEvents.length : insertAt, 0, inferredInput);
+    }
+    if (!hasOutputSafety) {
+        const doneIndex = nextEvents.findIndex((event) => event.kind === "done");
+        const anchorIndex = doneIndex === -1 ? nextEvents.length : doneIndex;
+        const anchorStep = (doneIndex === -1 ? nextEvents.at(-1)?.step : nextEvents[doneIndex]?.step) ?? 1;
+        const inferredOutput = {
+            kind: "output_safety",
+            payload: {
+                safe: true,
+                inferred: true,
+                action: "allow",
+                reason: "No explicit output_safety block was emitted by the model.",
+            },
+            step: anchorStep,
+        };
+        nextEvents.splice(anchorIndex, 0, inferredOutput);
+    }
+    return nextEvents;
+}
+function canInferDoneFromEvents(events) {
+    if (events.length === 0 || events.some((event) => event.kind === "done" || event.kind === "error")) {
+        return false;
+    }
+    const kinds = events.map((event) => event.kind);
+    if (!kinds.includes("writing")) {
+        return false;
+    }
+    const lastKind = events.at(-1)?.kind;
+    return lastKind === "writing" || lastKind === "output_safety";
+}
+export function inferImplicitDoneEvent(events) {
+    if (!canInferDoneFromEvents(events)) {
+        return {
+            events: [...events],
+            inferred: false,
+        };
+    }
+    const finalStep = events.at(-1)?.step ?? 1;
+    const inferredDone = {
+        kind: "done",
+        step: finalStep,
+    };
+    return {
+        events: [...events, inferredDone],
+        inferred: true,
+    };
 }
 //# sourceMappingURL=protocol.js.map

@@ -11,3 +11,5 @@ Thinking rules:
 - Use `revise` when you need to correct, narrow, or re-plan the answer after a checkpoint or new evidence.
 - Keep thinking blocks concise, useful, and oriented toward the next best action.
 - Thinking blocks are not user-visible output.
+
+{block:intelligence_thinking_guidance}

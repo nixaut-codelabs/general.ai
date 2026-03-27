@@ -1,7 +1,9 @@
 import type {
   GeneralAIContextConfig,
+  GeneralAIIntelligenceLevel,
   GeneralAILimits,
   GeneralAIParallelConfig,
+  GeneralAIPreset,
   GeneralAIPromptOverrides,
   GeneralAISafetyConfig,
   GeneralAIThinkingConfig,
@@ -35,6 +37,8 @@ export const PROMPT_SECTION_TITLES: Record<PromptSectionKey, string> = {
 };
 
 export const DEFAULT_PROMPT_OVERRIDES: GeneralAIPromptOverrides = {};
+export const DEFAULT_PRESET: GeneralAIPreset = "balanced";
+export const DEFAULT_INTELLIGENCE: GeneralAIIntelligenceLevel = "medium";
 
 export const DEFAULT_SAFETY: Required<GeneralAISafetyConfig> = {
   enabled: true,
@@ -120,3 +124,12 @@ export const DEFAULT_CONTEXT: Required<GeneralAIContextConfig> = {
   },
   prompt: "",
 };
+
+export const PRESET_NAMES: GeneralAIPreset[] = [
+  "balanced",
+  "strict",
+  "fast",
+  "agentic",
+  "classic_safe",
+  "research",
+];
